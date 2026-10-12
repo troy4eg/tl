@@ -16,6 +16,20 @@ func (s *server) rebuildSemanticDiagnostics() {
 		if d == nil {
 			continue
 		}
+		// Partial declarations have names for navigation but no complete
+		// semantic signature. Defer unknown-type errors for their consumers.
+		if item.Code == "unknown-type" {
+			partialTarget := false
+			for _, ref := range d.refs {
+				if item.Message == "Unknown type '"+ref.name+"'" && ref.begin >= item.Pos.Begin.Offset() && ref.end <= item.Pos.End.Offset() && len(s.definitions(ref.name)) > 0 {
+					partialTarget = true
+					break
+				}
+			}
+			if partialTarget {
+				continue
+			}
+		}
 		b, e := d.parserRange(item.Pos)
 		// TL1 typeref positions include bare markers and parentheses. Point
 		// unknown-type diagnostics at the same name range as navigation.

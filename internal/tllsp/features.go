@@ -33,16 +33,28 @@ func (s *server) completion(d *document, offset int) []completionItem {
 		}
 		out = append(out, item)
 	}
-	for _, sym := range d.symbols {
-		if offset >= sym.begin && offset <= sym.end {
-			for _, local := range sym.locals {
-				kind := 25
-				if local.kind == 8 {
-					kind = 5
-				}
-				add(local.name, kind, local.signature, local.comment)
-			}
+	var locals map[string]*symbol
+	var scope func(*symbol)
+	scope = func(sym *symbol) {
+		if offset < sym.begin || offset > sym.end {
+			return
 		}
+		if sym.locals != nil {
+			locals = sym.locals
+		}
+		for _, child := range sym.children {
+			scope(child)
+		}
+	}
+	for _, sym := range d.symbols {
+		scope(sym)
+	}
+	for _, local := range locals {
+		kind := 25
+		if local.kind == 8 {
+			kind = 5
+		}
+		add(local.name, kind, local.signature, local.comment)
 	}
 	for _, p := range d.primitives() {
 		add(p, 14, "Built-in type", "")

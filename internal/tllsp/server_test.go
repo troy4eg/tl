@@ -132,7 +132,7 @@ func TestEditorIndependentSession(t *testing.T) {
 	}
 	var symbols []documentSymbol
 	response(t, results, 4, &symbols)
-	if len(symbols) != 2 || symbols[1].Name != "after" {
+	if len(symbols) != 3 || symbols[1].Name != "broken" || symbols[2].Name != "after" {
 		t.Fatalf("recovered symbols: %+v", symbols)
 	}
 	var items []completionItem

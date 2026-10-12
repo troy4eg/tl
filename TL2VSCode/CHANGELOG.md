@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Keep navigation, hover, references, completion and outline available in unfinished TL and TL2 declarations.
+- Recover following declarations after missing semicolons or unclosed brackets, preserving current buffer positions.
+- Retain variant and nested-repeat completion scopes; remove deleted fields immediately.
+- Defer semantic checks and rename for incomplete declarations until they are finished.
+
 ## 0.4.0
 
 - Diagnose template arity/category errors, duplicate declarations, local names and variants, invalid field dependencies, and CRC conflicts in TL and TL2.

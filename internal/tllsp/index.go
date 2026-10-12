@@ -14,6 +14,7 @@ import (
 var primitives = []string{"int32", "uint32", "int64", "uint64", "float32", "float64", "byte", "string", "bool", "bit", "true"}
 
 type symbol struct {
+	incomplete                     bool
 	name, signature, comment       string
 	globalKind                     string
 	scope                          *symbol
@@ -64,18 +65,24 @@ func parseDocumentLanguage(uri, text string, version int, open bool, language st
 		d.parseTL(path)
 		return d
 	}
-	ast, errs := tlast.ParseTL2FileRecovering(text, path)
-	d.tl2 = ast.Combinators
-	for _, err := range errs {
+	ast := tlast.ParseTL2FileEditing(text, path)
+	for _, err := range ast.Errors {
 		b, e := d.parserRange(err.Pos)
 		d.errors = append(d.errors, diagnostic{Range: d.span(b, e), Severity: 1, Source: "tl2lsp", Message: err.Error(), Code: "syntax"})
 	}
-	for _, comb := range ast.Combinators {
+	for i, comb := range ast.Declarations {
+		if !ast.Incomplete[i] {
+			d.tl2 = append(d.tl2, comb)
+		}
 		b, e := d.parserRange(comb.PR)
 		s := &symbol{begin: b, end: e, kind: 23, globalKind: "type", comment: cleanComment(comb.CommentBefore), locals: map[string]*symbol{}}
 		copyComb := comb
 		copyComb.CommentBefore = ""
 		s.signature = copyComb.String()
+		s.incomplete = ast.Incomplete[i]
+		if s.incomplete {
+			s.signature = strings.TrimSpace(text[b:e])
+		}
 		var namePR tlast.PositionRange
 		if comb.IsFunction {
 			s.name, s.kind = comb.FuncDecl.Name.String(), 12
@@ -96,6 +103,9 @@ func parseDocumentLanguage(uri, text string, version int, open bool, language st
 			pb, pe := d.parserRange(p.PR)
 			nb, ne := d.parserRange(p.PRName)
 			local := &symbol{name: p.Name, kind: 26, scope: s, begin: pb, end: pe, nameBegin: nb, nameEnd: ne, signature: p.Name + ": " + p.Category.String()}
+			if s.incomplete {
+				local.signature = strings.TrimSpace(text[pb:pe])
+			}
 			s.locals[p.Name] = local
 			s.children = append(s.children, local)
 		}
@@ -104,6 +114,9 @@ func parseDocumentLanguage(uri, text string, version int, open bool, language st
 			d.addDefinition(s, comb.FuncDecl.ReturnType, s.locals)
 		} else {
 			d.addDefinition(s, comb.TypeDecl.Type, s.locals)
+		}
+		if s.incomplete {
+			walkSymbols([]*symbol{s}, func(sym *symbol) { sym.incomplete = true })
 		}
 		d.symbols = append(d.symbols, s)
 	}
@@ -159,7 +172,7 @@ func (d *document) addDefinition(parent *symbol, def tlast.TL2TypeDefinition, lo
 		}
 		b, e := d.parserRange(variant.PR)
 		nb, ne := d.parserRange(variant.PRName)
-		child := &symbol{name: variant.Name, kind: 22, scope: parent, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: variant.Name, comment: cleanComment(variant.CommentBefore)}
+		child := &symbol{name: variant.Name, kind: 22, scope: parent, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: variant.Name, comment: cleanComment(variant.CommentBefore), locals: variantLocals}
 		if variant.IsTypeAlias {
 			d.addTypeRef(variant.TypeAlias, variantLocals)
 		} else {

@@ -58,6 +58,9 @@ func (target renameTarget) check() *rpcError {
 		return &rpcError{requestFailed, "No declared symbol at this position"}
 	}
 	for _, def := range target.defs {
+		if def.sym.incomplete {
+			return &rpcError{requestFailed, "Finish the declaration and fix its syntax errors before renaming this symbol"}
+		}
 		if def.sym.name == "_" || strings.HasPrefix(def.sym.name, "$") ||
 			(def.sym.globalKind != "" && def.doc.isPrimitive(def.sym.name)) {
 			return &rpcError{requestFailed, "Built-in and anonymous symbols cannot be renamed"}

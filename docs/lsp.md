@@ -48,6 +48,7 @@ logs go to stderr.
 - Workspace symbol search.
 - Full semantic tokens, including comments and declarations.
 - Unsaved documents, full/incremental edits and UTF-16 positions.
+- Navigation, hover, references, completion and outline in unfinished declarations.
 - Workspace folder changes and file change notifications.
 
 The server supports TL in `.tl` files and TL2 in `.tl2` files, including
@@ -85,11 +86,21 @@ contain no editor-specific keys.
 
 ## Scope and limitations
 
-The recovery parser skips malformed declarations up to the next semicolon,
-retaining other valid declarations and their original source positions. An
-unfinished declaration is not indexed until it parses successfully. A missing
-semicolon can therefore also hide the following declaration. Generator parsing
-remains strict and unchanged.
+The editor parser retains names, parameters, fields and type references already
+written in unfinished TL and TL2 declarations. Navigation, hover, references,
+completion, outline and semantic tokens use those fragments with positions from
+the current buffer. Deleted names disappear immediately; there is no stale AST
+from the last successful parse. Union variants and nested repeats have their own
+completion scopes.
+
+After a syntax error, recovery recognizes explicit declaration headers at the
+start of a line and TL section markers, even when a semicolon or closing bracket
+is missing. Valid multiline declarations are parsed as a whole first. Recovery
+is conservative: ambiguous text and a second declaration on the same line
+without a semicolon may not be indexed separately. Generator parsing stays strict.
+Semantic checks and CRC calculations use only complete declarations. Known names
+of partial types remain available to consumers; signature-dependent checks resume
+when their declarations are finished. Syntax diagnostics remain visible while typing.
 
 The semantic pass checks template arity and `Type`/`#` categories, matching TL1
 result parameters and shared type signatures, duplicate declarations/parameters/
@@ -133,8 +144,9 @@ Qualified names are renamed as a whole (for example, `api.Item` to
 `api.Record`). New names must follow TL identifier syntax. Built-ins and
 anonymous/ignored fields cannot be renamed. Duplicate global declarations are
 ambiguous, except for shared TL result types; narrow `schemaPaths` to one schema.
-Global rename requires all indexed schemas to parse successfully so usages in
-skipped declarations cannot be missed. A blocked rename lists up to five errors
+Rename is unavailable for symbols inside an incomplete declaration. Global rename
+requires all indexed schemas to parse successfully so partially parsed usages
+cannot be missed. A blocked rename lists up to five errors
 with absolute file paths and 1-based line/column numbers, including unopened
 files. The language server output contains the full list.
 References still work in parsed parts

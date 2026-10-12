@@ -7,17 +7,20 @@ import (
 )
 
 func (d *document) parseTL(path string) {
-	ast, errs := tlast.ParseTLFileRecovering(d.text, path)
-	d.tl = ast
-	for _, err := range errs {
+	ast := tlast.ParseTLFileEditing(d.text, path)
+	for _, err := range ast.Errors {
 		b, e := d.parserRange(err.Pos)
 		d.errors = append(d.errors, diagnostic{Range: d.span(b, e), Severity: 1, Source: "tl2lsp", Message: err.Error(), Code: "syntax"})
 	}
-	for _, c := range ast {
+	for i, c := range ast.Declarations {
+		if !ast.Incomplete[i] {
+			d.tl = append(d.tl, c)
+		}
 		b, e := d.parserRange(c.PR)
 		nb, ne := d.parserRange(c.Construct.NamePR)
 		s := &symbol{name: c.Construct.Name.String(), kind: 23, globalKind: "constructor", begin: b, end: e, nameBegin: nb, nameEnd: ne,
 			signature: strings.TrimSpace(d.text[b:e]), comment: cleanComment(c.CommentBefore), locals: map[string]*symbol{}}
+		s.incomplete = ast.Incomplete[i]
 		if c.IsFunction {
 			s.kind = 12
 			s.globalKind = "function"
@@ -34,7 +37,7 @@ func (d *document) parseTL(path string) {
 		d.addTLFields(s, c.Fields, s.locals)
 		if c.IsFunction {
 			d.addTLRef(c.FuncDecl, s.locals)
-		} else {
+		} else if !c.TypeDecl.Name.IsEmpty() {
 			b, e := d.parserRange(c.TypeDecl.PR)
 			nb, ne := d.parserRange(c.TypeDecl.NamePR)
 			typeSymbol := &symbol{name: c.TypeDecl.Name.String(), kind: 23, globalKind: "type", begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: s.signature, comment: s.comment}
@@ -43,6 +46,9 @@ func (d *document) parseTL(path string) {
 			for i, name := range c.TypeDecl.Arguments {
 				d.addTLNameRef(name, c.TypeDecl.ArgumentsPR[i], s.locals)
 			}
+		}
+		if s.incomplete {
+			walkSymbols([]*symbol{s}, func(sym *symbol) { sym.incomplete = true })
 		}
 		d.symbols = append(d.symbols, s)
 	}
@@ -117,6 +123,7 @@ func (d *document) addTLFields(parent *symbol, fields []tlast.Field, locals map[
 		nestedParent := parent
 		if children[i] != nil {
 			nestedParent = children[i]
+			nestedParent.locals = nestedLocals
 		}
 		d.addTLFields(nestedParent, f.ScaleRepeat.Rep, nestedLocals)
 	}

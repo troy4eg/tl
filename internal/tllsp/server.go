@@ -151,7 +151,7 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 		s.reindex()
 		s.initialized = true
 		return map[string]any{
-			"serverInfo": map[string]any{"name": "tl2lsp", "version": "0.4.0"},
+			"serverInfo": map[string]any{"name": "tl2lsp", "version": "0.5.0"},
 			"capabilities": map[string]any{
 				"positionEncoding":   "utf-16",
 				"textDocumentSync":   map[string]any{"openClose": true, "change": 2, "save": map[string]any{"includeText": false}},

@@ -53,7 +53,7 @@ get value:Item = Box Item;
 	}
 	var syms []documentSymbol
 	response(t, results, 7, &syms)
-	if len(syms) != 5 || syms[3].Name != "after" || syms[4].Kind != 12 {
+	if len(syms) != 6 || syms[3].Name != "broken" || syms[4].Name != "after" || syms[5].Kind != 12 {
 		t.Fatalf("symbols after invalid declaration: %+v", syms)
 	}
 	var items []completionItem

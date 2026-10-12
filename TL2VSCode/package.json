@@ -2,7 +2,7 @@
   "name": "tl2",
   "displayName": "TL / TL2",
   "description": "TL and TL2 language support powered by the standalone tl2lsp language server",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "license": "MPL-2.0",
   "icon": "icons/tl2-language-dark.png",
   "engines": {

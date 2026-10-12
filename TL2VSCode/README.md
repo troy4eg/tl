@@ -92,7 +92,7 @@ configuration.
 ```sh
 npm ci
 npx @vscode/vsce package
-code --install-extension tl2-0.4.0.vsix
+code --install-extension tl2-0.5.0.vsix
 ```
 
 The extension requires a trusted workspace and VS Code 1.82 or newer. It is not
@@ -118,7 +118,10 @@ PATH="$PWD/../target/bin:$PATH" code \
 The test exercises file detection, references and rename through VS Code's
 providers and applies workspace edits to temporary editor buffers. It checks
 shared TL types, bare constructors, TL2 types, local template scope, comments
-and explicit CRC tags. Results are saved to `editor-results.json` in the test
+and explicit CRC tags. It also checks closed-file diagnostics and navigation,
+hover, references, completion and outline while declarations are being typed,
+including missing-semicolon recovery and removal of stale fields.
+Results are saved to `editor-results.json` in the test
 workspace. Test sources are excluded from the VSIX.
 
 ## Replacing the icon
