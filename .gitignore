@@ -28,3 +28,10 @@ go.work
 
 # for local things
 /out
+
+# Editor extension build output
+TL2VSCode/node_modules/
+TL2VSCode/out/
+TL2VSCode/*.vsix
+TL2Zed/target/
+TL2Zed/extension.wasm

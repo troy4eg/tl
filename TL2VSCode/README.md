@@ -1,79 +1,95 @@
-# TL2 for VS Code
+# TL / TL2 for VS Code
 
-Syntax highlighting and basic navigation for [TL2](https://github.com/VKCOM/tl/blob/master/docs/TL2Primer.pdf) — Type Language 2.
+Syntax highlighting and a thin client for the standalone [`tl2lsp`](../docs/lsp.md)
+language server. All parsing, navigation, completion and diagnostics run in the
+server shared with the Zed client.
 
 ## Features
 
-- Syntax highlighting for `.tl2` files (TextMate grammar)
-- Comments toggling (`//`, `/* */`)
-- Bracket matching and auto-closing for `[]`, `()`, `<>`
-- Document outline / Go to Symbol (`Ctrl+Shift+O`) — lists every declaration:
-  - structs (`name = ...`)
-  - unions (`name = | A | B ...`) with constructors as children
-  - aliases (`name <=> ...`)
-  - functions (`name#crc32 ... => ...`)
-- **Go to Definition** (`F12` / `Ctrl+Click`) on any type reference —
-  works across files in the workspace
-- **Hover** shows declaration signature and leading `//` comments
-- **Autocompletion** of all types declared in the workspace + built-in primitives
-- **Diagnostics**: references to types that don't exist anywhere are flagged
-  as "Unknown type". Configurable severity (see below).
+- Automatic language detection and TextMate highlighting for `.tl` (TL) and `.tl2` (TL2).
+- Go to Definition across files and local template parameters.
+- Hover, type completion, document outline and workspace symbols.
+- Syntax and configurable unknown-type diagnostics.
+- Semantic tokens from the shared server.
 
-## Built-in types highlighted as primitives
+See [server features and limitations](../docs/lsp.md) for the exact scope.
 
-`int32`, `uint32`, `int64`, `uint64`, `float32`, `float64`, `byte`, `string`, `bool`, `bit`, `true`.
+## Local setup
 
-## Settings
-
-- `tl2.diagnostics.unknownTypes` (default: `"warning"`) — severity for
-  references to types not declared in the workspace. Allowed values:
-  `"error"`, `"warning"`, `"information"`, `"hint"`, `"off"`. Set to `"off"`
-  if your project mixes TL2 files with external references the extension
-  can't see.
-
-## Running locally (development)
-
-1. Open this folder (`TL2VSCode/`) in VS Code:
+1. From the repository root, install the server:
 
    ```sh
-   code /path/to/tl/TL2VSCode
+   go install ./cmd/tl2lsp
    ```
 
-2. Install dependencies and compile (only needed once, and after `src/` changes):
+   Ensure the Go install directory (`GOBIN`, or `$(go env GOPATH)/bin` when
+   `GOBIN` is unset) is on the PATH inherited by VS Code. The extension uses
+   `tl2lsp` by default, so no `tl2.server.path` setting is needed in that case.
+   After changing PATH, fully restart VS Code so its extension host inherits it.
+
+   Alternatively, `make build-lsp` produces `target/bin/tl2lsp` inside this
+   checkout. If that directory is not on PATH, configure its absolute path as
+   shown below.
+
+2. Open `TL2VSCode/` in VS Code, then build the extension:
 
    ```sh
-   npm install
+   npm ci
    npm run compile
    ```
 
-3. Press **F5** (or *Run → Start Debugging*). A second VS Code window opens
-   with `[Extension Development Host]` in the title — your extension is loaded there.
+3. Press **F5** to open the Extension Development Host and open a `.tl` or `.tl2` file.
+   If `tl2lsp` is on VS Code's PATH, it starts automatically with the defaults.
+   Optional settings for a local build and explicit schema boundaries:
 
-4. In that second window, open any `.tl2` file (e.g. `internal/tlcodegen/test/tls/cases.tl2`).
-   You should see syntax highlighting, Outline (`Ctrl+Shift+O`), and hover/Go-to-Definition.
+   ```json
+   {
+     "tl2.server.path": "/absolute/path/to/tl/target/bin/tl2lsp",
+     "tl2.schemaPaths": ["schemas"],
+     "tl2.diagnostics.unknownTypes": "warning"
+   }
+   ```
 
-While iterating: after editing `src/extension.ts`, run `npm run compile` (or `npm run watch` in
-a separate terminal for auto-rebuild), then `Ctrl+R` in the Extension Development Host
-window to reload it. Grammar changes (`syntaxes/*.json`) and `package.json` changes also need
-the window reloaded.
+   Replace `schemas` with your schema directory, or omit `tl2.schemaPaths` to
+   index the workspace. Then reload the extension host and open a `.tl` or `.tl2` file.
+   Omit `tl2.server.path` when using `tl2lsp` from PATH. This is the extension
+   host's PATH; a PATH set only in an integrated terminal is not sufficient.
 
-## Installing persistently (across all VS Code windows)
+If startup fails, the extension displays an error with a link to the
+**TL / TL2 Language Server** Output channel. Check `tl2lsp -version` and, if
+needed, set `tl2.server.path` to the executable's absolute path.
 
-Symlink the folder into your VS Code extensions directory:
+Language features require the server executable. It is installed independently
+and is not downloaded or bundled by this extension.
+
+## Settings
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `tl2.server.path` | `tl2lsp` | Server executable or absolute path |
+| `tl2.server.arguments` | `[]` | Arguments passed to the executable |
+| `tl2.schemaPaths` | `[]` | Schema files/directories, TL and TL2 schemas |
+| `tl2.diagnostics.unknownTypes` | `warning` | `error`, `warning`, `information`, `hint`, `off` |
+
+Relative schema paths resolve against the first workspace folder. Open documents
+are included regardless of these paths. For repositories with multiple
+independent schemas, configure the paths to one schema and its dependencies.
+
+Schema paths and diagnostic settings update while the server is running. After
+changing the executable or arguments, reload the extension host. Use
+**TL2: Restart Language Server** to restart the process with its current launch
+configuration.
+
+## Packaging and installation
 
 ```sh
-ln -s /absolute/path/to/tl/TL2VSCode ~/.vscode/extensions/tl2-0.0.1
+npm ci
+npx @vscode/vsce package
+code --install-extension tl2-0.2.0.vsix
 ```
 
-Restart VS Code. To update: pull repo, `npm run compile`, `Developer: Reload Window`.
-
-## Packaging a `.vsix`
-
-```sh
-npm install -g @vscode/vsce
-vsce package
-code --install-extension tl2-0.0.1.vsix
-```
+The extension requires a trusted workspace and VS Code 1.82 or newer. It is not
+yet published in the marketplace.
 
 ## Replacing the icon
 

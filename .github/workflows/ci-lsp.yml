@@ -1,0 +1,28 @@
+name: TL2 editor clients
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  vscode:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: TL2VSCode
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: TL2VSCode/package-lock.json
+      - run: npm ci
+      - run: npm run compile
+
+  zed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - run: rustup target add wasm32-wasip1
+      - run: cargo build --locked --release --target wasm32-wasip1 --manifest-path TL2Zed/Cargo.toml

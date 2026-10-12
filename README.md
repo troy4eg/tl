@@ -40,6 +40,7 @@ go install github.com/VKCOM/tl/cmd/tlgen@latest
 
 - [Internals (TL1)](./docs/TLPrimer.pdf) (in Russian)
 - [Internals (TL2)](./docs/TL2Primer.pdf) (in Russian)
+- [TL / TL2 language server and editor setup](./docs/lsp.md)
 
 ## License
 

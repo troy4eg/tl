@@ -1,12 +1,12 @@
 {
   "name": "tl2",
-  "displayName": "TL2",
-  "description": "Syntax highlighting and basic navigation for TL2 (Type Language 2)",
-  "version": "0.0.1",
+  "displayName": "TL / TL2",
+  "description": "TL and TL2 language support powered by the standalone tl2lsp language server",
+  "version": "0.2.0",
   "license": "MPL-2.0",
   "icon": "icons/tl2-language-dark.png",
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.82.0"
   },
   "categories": [
     "Programming Languages"
@@ -22,9 +22,25 @@
   "contributes": {
     "languages": [
       {
+        "id": "tl",
+        "aliases": [
+          "TL",
+          "tl"
+        ],
+        "extensions": [
+          ".tl"
+        ],
+        "configuration": "./tl-language-configuration.json"
+      },
+      {
         "id": "tl2",
-        "aliases": ["TL2", "tl2"],
-        "extensions": [".tl2"],
+        "aliases": [
+          "TL2",
+          "tl2"
+        ],
+        "extensions": [
+          ".tl2"
+        ],
         "configuration": "./language-configuration.json",
         "icon": {
           "light": "./icons/tl2-language-light.png",
@@ -33,6 +49,11 @@
       }
     ],
     "grammars": [
+      {
+        "language": "tl",
+        "scopeName": "source.tl",
+        "path": "./syntaxes/tl.tmLanguage"
+      },
       {
         "language": "tl2",
         "scopeName": "source.tl2",
@@ -44,12 +65,45 @@
       "properties": {
         "tl2.diagnostics.unknownTypes": {
           "type": "string",
-          "enum": ["error", "warning", "information", "hint", "off"],
+          "enum": [
+            "error",
+            "warning",
+            "information",
+            "hint",
+            "off"
+          ],
           "default": "warning",
           "description": "Severity for references to types not declared anywhere in the workspace (and not a built-in or template parameter). Set to \"off\" to disable."
+        },
+        "tl2.server.path": {
+          "type": "string",
+          "default": "tl2lsp",
+          "description": "Path to the standalone tl2lsp executable. Restart the extension host after changing it."
+        },
+        "tl2.server.arguments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Arguments passed to tl2lsp. Restart the extension host after changing them."
+        },
+        "tl2.schemaPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Schema files or directories to index, including TL1 dependencies. Relative paths use the first workspace folder. Empty means all workspace folders."
         }
       }
-    }
+    },
+    "commands": [
+      {
+        "command": "tl2.restartLanguageServer",
+        "title": "TL2: Restart Language Server"
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p ./",
@@ -70,5 +124,13 @@
   "bugs": {
     "url": "https://github.com/VKCOM/tl/issues"
   },
-  "homepage": "https://github.com/VKCOM/tl/tree/master/TL2VSCode#readme"
+  "homepage": "https://github.com/VKCOM/tl/tree/master/TL2VSCode#readme",
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    }
+  }
 }

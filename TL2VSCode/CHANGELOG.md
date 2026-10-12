@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0
+
+- Register `.tl` as TL alongside `.tl2` as TL2 and connect both to the server.
+- Add TL navigation, hover, completion, symbols and syntax diagnostics.
+- Honor manually selected document languages, including after edits.
+- Show an actionable error and Output channel when the server cannot start.
+
+## 0.1.0
+
+- Language features now use the standalone `tl2lsp` server over stdio.
+- Shared syntax diagnostics, workspace symbols and semantic tokens.
+- Configurable server executable, arguments and schema paths.
+- Removed the editor-specific parser and indexer.
+
 ## 0.0.1
 
 - Initial release.

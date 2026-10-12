@@ -1,0 +1,15 @@
+id = "tl2"
+name = "TL / TL2"
+description = "TL and TL2 language support powered by the standalone tl2lsp server."
+version = "0.2.0"
+schema_version = 1
+authors = ["VKCOM"]
+repository = "https://github.com/VKCOM/tl"
+
+[language_servers.tl2lsp]
+name = "TL2 Language Server"
+languages = ["TL", "TL2"]
+
+[language_servers.tl2lsp.language_ids]
+TL = "tl"
+TL2 = "tl2"

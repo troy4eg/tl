@@ -17,6 +17,14 @@ build: # build static binary to run on many linux  variants
 	CGO_ENABLED=0 $(GO) build -buildvcs=$(BUILD_VCS) -o target/bin/tlgen ./cmd/tlgen
 	CGO_ENABLED=0 $(GO) build -buildvcs=$(BUILD_VCS) -o target/bin/tl2gen ./cmd/tl2gen
 	CGO_ENABLED=0 $(GO) build -buildvcs=$(BUILD_VCS) -o target/bin/tl2client ./cmd/tl2client
+	CGO_ENABLED=0 $(GO) build -buildvcs=$(BUILD_VCS) -o target/bin/tl2lsp ./cmd/tl2lsp
+
+.PHONY: build-lsp test-lsp
+build-lsp:
+	CGO_ENABLED=0 $(GO) build -buildvcs=$(BUILD_VCS) -o target/bin/tl2lsp ./cmd/tl2lsp
+
+test-lsp:
+	$(GO) test -race ./internal/tlast ./internal/tllsp ./cmd/tl2lsp
 
 .PHONY: gen_bootstrap
 gen_bootstrap: build # do not set --basicPkgPath, or you'll have hard time updating basictl

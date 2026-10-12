@@ -1,0 +1,12 @@
+[package]
+name = "zed_tl2"
+version = "0.2.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.7.0"

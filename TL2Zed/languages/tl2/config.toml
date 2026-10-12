@@ -1,0 +1,10 @@
+name = "TL2"
+path_suffixes = ["tl2"]
+code_fence_block_name = "tl2"
+line_comments = ["// "]
+word_characters = ["_"]
+autoclose_before = ";:.,=>]"
+brackets = [
+    { start = "[", end = "]", close = true, newline = false },
+    { start = "<", end = ">", close = true, newline = false },
+]

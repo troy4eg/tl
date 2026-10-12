@@ -5,5 +5,5 @@ out/**/*.map
 .gitignore
 .eslintrc.json
 tsconfig.json
-node_modules/**
 **/*.ts
+*.vsix
