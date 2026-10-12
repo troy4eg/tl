@@ -82,8 +82,8 @@ func (k *Kernel) typeCheckTypeRef(tr tlast.TL2TypeRef, leftArgs []tlast.TL2TypeT
 		if kt.combTL2.IsFunction {
 			return tr.SomeType.PRName.BeautifulError(fmt.Errorf("cannot reference function %s", someType.Name))
 		}
-		if len(someType.Arguments) != len(kt.combTL2.TypeDecl.TemplateArguments) {
-			return tr.PR.BeautifulError(fmt.Errorf("typeref %s must have %d template arguments, has %d", someType.String(), len(kt.combTL2.TypeDecl.TemplateArguments), len(someType.Arguments)))
+		if err := tlast.TemplateArityError(someType.String(), len(kt.combTL2.TypeDecl.TemplateArguments), len(someType.Arguments)); err != nil {
+			return tr.PR.BeautifulError(err)
 		}
 		for i, targ := range kt.combTL2.TypeDecl.TemplateArguments {
 			cat, err := k.typeCheckArgument(someType.Arguments[i], leftArgs)
@@ -99,8 +99,8 @@ func (k *Kernel) typeCheckTypeRef(tr tlast.TL2TypeRef, leftArgs []tlast.TL2TypeT
 	if kt.combTL1[0].IsFunction {
 		return tr.SomeType.PRName.BeautifulError(fmt.Errorf("cannot reference function %s", someType.Name))
 	}
-	if len(someType.Arguments) != len(kt.combTL1[0].TemplateArguments) {
-		return tr.PR.BeautifulError(fmt.Errorf("typeref %s must have %d template arguments, has %d", someType.String(), len(kt.combTL1[0].TemplateArguments), len(someType.Arguments)))
+	if err := tlast.TemplateArityError(someType.String(), len(kt.combTL1[0].TemplateArguments), len(someType.Arguments)); err != nil {
+		return tr.PR.BeautifulError(err)
 	}
 	for i, targ := range kt.combTL1[0].TemplateArguments {
 		cat, err := k.typeCheckArgument(someType.Arguments[i], leftArgs)

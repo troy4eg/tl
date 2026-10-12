@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- Diagnose template arity/category errors, duplicate declarations, local names and variants, invalid field dependencies, and CRC conflicts in TL and TL2.
+- Publish syntax and semantic diagnostics for unopened indexed schemas and clear stale diagnostics when files leave the schema.
+- Update dependent-file diagnostics from unsaved buffers and link conflicts to their original declarations.
+
 ## 0.3.2
 
 - Accept the legacy TL declaration `_ {X:Type} result:X = ReqResult X;` in the editor parser without breaking internal builtin placeholders.

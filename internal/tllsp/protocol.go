@@ -27,10 +27,17 @@ type location struct {
 }
 
 type diagnostic struct {
-	Range    span   `json:"range"`
-	Severity int    `json:"severity"`
-	Source   string `json:"source"`
-	Message  string `json:"message"`
+	Range              span                           `json:"range"`
+	Severity           int                            `json:"severity"`
+	Source             string                         `json:"source"`
+	Message            string                         `json:"message"`
+	Code               string                         `json:"code,omitempty"`
+	RelatedInformation []diagnosticRelatedInformation `json:"relatedInformation,omitempty"`
+}
+
+type diagnosticRelatedInformation struct {
+	Location location `json:"location"`
+	Message  string   `json:"message"`
 }
 
 type documentSymbol struct {

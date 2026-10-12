@@ -8,9 +8,10 @@ import (
 
 func (d *document) parseTL(path string) {
 	ast, errs := tlast.ParseTLFileRecovering(d.text, path)
+	d.tl = ast
 	for _, err := range errs {
 		b, e := d.parserRange(err.Pos)
-		d.errors = append(d.errors, diagnostic{d.span(b, e), 1, "tl2lsp", err.Error()})
+		d.errors = append(d.errors, diagnostic{Range: d.span(b, e), Severity: 1, Source: "tl2lsp", Message: err.Error(), Code: "syntax"})
 	}
 	for _, c := range ast {
 		b, e := d.parserRange(c.PR)

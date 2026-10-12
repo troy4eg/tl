@@ -11,7 +11,7 @@ func main() {
 	version := flag.Bool("version", false, "print language server version")
 	flag.Parse()
 	if *version {
-		fmt.Println("tl2lsp 0.3.2")
+		fmt.Println("tl2lsp 0.4.0")
 		return
 	}
 	tllsp.Main()

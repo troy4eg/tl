@@ -39,6 +39,8 @@ type document struct {
 	exported []*symbol
 	refs     []reference
 	errors   []diagnostic
+	tl       tlast.TL
+	tl2      []tlast.TL2Combinator
 }
 
 func (d *document) parserRange(pr tlast.PositionRange) (int, int) {
@@ -63,9 +65,10 @@ func parseDocumentLanguage(uri, text string, version int, open bool, language st
 		return d
 	}
 	ast, errs := tlast.ParseTL2FileRecovering(text, path)
+	d.tl2 = ast.Combinators
 	for _, err := range errs {
 		b, e := d.parserRange(err.Pos)
-		d.errors = append(d.errors, diagnostic{d.span(b, e), 1, "tl2lsp", err.Error()})
+		d.errors = append(d.errors, diagnostic{Range: d.span(b, e), Severity: 1, Source: "tl2lsp", Message: err.Error(), Code: "syntax"})
 	}
 	for _, comb := range ast.Combinators {
 		b, e := d.parserRange(comb.PR)
@@ -228,6 +231,7 @@ func (s *server) definitions(name string) []definition {
 }
 
 func (s *server) rebuildDefinitions() {
+	defer s.rebuildSemanticDiagnostics()
 	s.byName = map[string][]definition{}
 	for _, d := range s.documents() {
 		for _, sym := range d.exported {
@@ -332,7 +336,7 @@ func (s *server) diagnostics(d *document) []diagnostic {
 	severity := 2
 	switch s.options.Diagnostics.UnknownTypes {
 	case "off":
-		return out
+		severity = 0
 	case "error":
 		severity = 1
 	case "information":
@@ -340,11 +344,14 @@ func (s *server) diagnostics(d *document) []diagnostic {
 	case "hint":
 		severity = 4
 	}
-	for _, ref := range d.refs {
-		if ref.local != nil || d.isPrimitive(ref.name) || len(s.definitions(ref.name)) > 0 {
-			continue
+	for _, item := range s.semantic[d.uri] {
+		if item.Code == "unknown-type" {
+			if severity == 0 {
+				continue
+			}
+			item.Severity = severity
 		}
-		out = append(out, diagnostic{d.span(ref.begin, ref.end), severity, "tl2lsp", "Unknown type '" + ref.name + "'"})
+		out = append(out, item)
 	}
 	return out
 }

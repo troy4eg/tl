@@ -29,6 +29,9 @@ type server struct {
 	initialized, shutdown bool
 	dynamicWatchers       bool
 	documentChanges       bool
+	semantic              map[string][]diagnostic
+	published             map[string]bool
+	relatedDiagnostics    bool
 }
 
 // Run serves one LSP connection. Only protocol messages are written to out;
@@ -114,6 +117,11 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 						DynamicRegistration bool `json:"dynamicRegistration"`
 					} `json:"didChangeWatchedFiles"`
 				} `json:"workspace"`
+				TextDocument struct {
+					PublishDiagnostics struct {
+						RelatedInformation bool `json:"relatedInformation"`
+					} `json:"publishDiagnostics"`
+				} `json:"textDocument"`
 			} `json:"capabilities"`
 		}
 		if err := decodeParams(raw, &p); err != nil {
@@ -137,12 +145,13 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 		if len(s.roots) == 0 && filepath.IsAbs(p.RootPath) {
 			s.roots = append(s.roots, p.RootPath)
 		}
-		s.reindex()
 		s.dynamicWatchers = p.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration
 		s.documentChanges = p.Capabilities.Workspace.WorkspaceEdit.DocumentChanges
+		s.relatedDiagnostics = p.Capabilities.TextDocument.PublishDiagnostics.RelatedInformation
+		s.reindex()
 		s.initialized = true
 		return map[string]any{
-			"serverInfo": map[string]any{"name": "tl2lsp", "version": "0.3.2"},
+			"serverInfo": map[string]any{"name": "tl2lsp", "version": "0.4.0"},
 			"capabilities": map[string]any{
 				"positionEncoding":   "utf-16",
 				"textDocumentSync":   map[string]any{"openClose": true, "change": 2, "save": map[string]any{"includeText": false}},
@@ -253,16 +262,30 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 }
 
 func (s *server) publishDiagnostics() error {
+	if s.published == nil {
+		s.published = map[string]bool{}
+	}
+	// Clear removed files and documents which leave the configured schema.
+	for uri := range s.published {
+		if s.docs[uri] == nil {
+			if err := writeMessage(s.out, map[string]any{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": map[string]any{"uri": uri, "diagnostics": []diagnostic{}}}); err != nil {
+				return err
+			}
+			delete(s.published, uri)
+		}
+	}
 	for _, d := range s.documents() {
-		if !d.open {
-			continue
+		params := map[string]any{"uri": d.uri, "diagnostics": s.diagnostics(d)}
+		if d.open {
+			params["version"] = d.version
 		}
 		if err := writeMessage(s.out, map[string]any{
 			"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
-			"params": map[string]any{"uri": d.uri, "version": d.version, "diagnostics": s.diagnostics(d)},
+			"params": params,
 		}); err != nil {
 			return err
 		}
+		s.published[d.uri] = true
 	}
 	return nil
 }
@@ -275,7 +298,7 @@ func (s *server) notification(method string, raw json.RawMessage) error {
 	switch method {
 	case "initialized":
 		if s.dynamicWatchers {
-			return writeMessage(s.out, map[string]any{
+			if e := writeMessage(s.out, map[string]any{
 				"jsonrpc": "2.0", "id": "tl2lsp-watchers", "method": "client/registerCapability",
 				"params": map[string]any{"registrations": []any{map[string]any{
 					"id": "tl2lsp-watchers", "method": "workspace/didChangeWatchedFiles",
@@ -284,9 +307,11 @@ func (s *server) notification(method string, raw json.RawMessage) error {
 						map[string]any{"globPattern": "**/*.tl", "kind": 7},
 					}},
 				}}},
-			})
+			}); e != nil {
+				return e
+			}
 		}
-		return nil
+		return s.publishDiagnostics()
 	case "$/cancelRequest", "$/setTrace":
 		return nil
 	case "textDocument/didOpen":
@@ -346,9 +371,6 @@ func (s *server) notification(method string, raw json.RawMessage) error {
 			uri := canonicalURI(p.TextDocument.URI)
 			delete(s.docs, uri)
 			s.reindex()
-			if e := writeMessage(s.out, map[string]any{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": map[string]any{"uri": uri, "diagnostics": []diagnostic{}}}); e != nil {
-				return e
-			}
 		}
 	case "textDocument/didSave", "workspace/didChangeWatchedFiles":
 		s.reindex()

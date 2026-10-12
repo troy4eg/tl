@@ -211,11 +211,16 @@ func TestSchemaPathsAndTL1Dependencies(t *testing.T) {
 	var counts []int
 	for _, r := range results {
 		if string(r["method"]) == `"textDocument/publishDiagnostics"` {
-			var p struct{ Diagnostics []diagnostic }
+			var p struct {
+				URI         string
+				Diagnostics []diagnostic
+			}
 			if err := json.Unmarshal(r["params"], &p); err != nil {
 				t.Fatal(err)
 			}
-			counts = append(counts, len(p.Diagnostics))
+			if p.URI == uri {
+				counts = append(counts, len(p.Diagnostics))
+			}
 		}
 	}
 	if len(counts) != 2 || counts[0] != 1 || counts[1] != 0 {

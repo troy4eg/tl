@@ -92,7 +92,7 @@ configuration.
 ```sh
 npm ci
 npx @vscode/vsce package
-code --install-extension tl2-0.3.2.vsix
+code --install-extension tl2-0.4.0.vsix
 ```
 
 The extension requires a trusted workspace and VS Code 1.82 or newer. It is not

@@ -38,6 +38,7 @@ logs go to stderr.
 
 - Syntax diagnostics from the existing TL and TL2 lexer/parsers.
 - Unknown-type diagnostics, with configurable severity.
+- Semantic diagnostics for template arity/categories, duplicate names, field dependencies and CRC conflicts, including unopened files.
 - Go to Definition across files, including local template parameters.
 - Find References across files, with optional declaration locations.
 - Rename types, constructors, functions, variants and local parameters/fields.
@@ -75,7 +76,7 @@ Initialization options are editor-independent:
 ```
 
 `unknownTypes` accepts `error`, `warning` (default), `information`, `hint` or `off`.
-Setting it to `off` leaves syntax diagnostics enabled. This is useful when some
+Setting it to `off` leaves syntax and other semantic diagnostics enabled. This is useful when some
 schema dependencies are unavailable locally.
 
 Runtime configuration uses the same object under `settings.tl2` in
@@ -90,9 +91,24 @@ unfinished declaration is not indexed until it parses successfully. A missing
 semicolon can therefore also hide the following declaration. Generator parsing
 remains strict and unchanged.
 
-Unknown-type diagnostics check declaration existence and template scope; they
-do not perform the full compiler's checks of generic arity, argument categories,
-field dependencies, CRC conflicts or binary compatibility. Ambiguous global
+The semantic pass checks template arity and `Type`/`#` categories, matching TL1
+result parameters and shared type signatures, duplicate declarations/parameters/
+fields/variants, and references to functions as types. It checks TL1 mask and
+repeat-size dependencies, mask bits, and TL2 field-dependent sizes (including
+aliases of `uint32`). Dependencies must refer to preceding required fields of the
+appropriate type. Nested repeats and union variants retain separate scopes.
+It also checks zero TL1 tags and CRC collisions across both formats, using the
+same tag checker as the hybrid compiler. The pass runs on recovered ASTs and
+unsaved buffers without generating code; missing dependencies do not suppress
+unrelated errors. Related locations link conflicts to their declarations.
+
+All indexed files receive diagnostics, including unopened schemas. Removing a
+file or narrowing `schemaPaths` clears its stale diagnostics. Closing an indexed
+buffer restores diagnostics from disk; changing a dependency updates consumers.
+
+This is not full compiler/backend validation: migration rules, generator-specific
+naming policies, complete type instantiation, alias-cycle validation and binary
+compatibility checks remain outside the editor's semantic pass. Ambiguous global
 definitions return all matching locations. Configure schema boundaries to avoid
 unrelated declarations with the same name.
 

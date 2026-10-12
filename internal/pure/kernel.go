@@ -548,41 +548,12 @@ func (k *Kernel) Compile() error {
 }
 
 func (k *Kernel) checkTagCollisions() error {
-	constructorTags := map[uint32]*tlast.ParseError{}
-	for _, typ := range k.filesTL1 {
-		crc32 := typ.Crc32()
-		if crc32 == 0 {
-			// typeA#00000000 = TypeA;
-			return typ.Construct.IDPR.BeautifulError(fmt.Errorf("constructor tag 0 is prohibited, even if generated implicitly"))
+	for _, item := range tlast.CheckConstructorTags(k.filesTL1, k.filesTL2) {
+		original := item.Pos.BeautifulError(errors.New(item.Message))
+		if item.Related != nil {
+			return tlast.BeautifulError2(original, item.Related.BeautifulError(errSeeHere))
 		}
-		if err, ok := constructorTags[crc32]; ok {
-			// typeA#dfc15abf = TypeA;
-			// typeB#dfc15abf = TypeB;
-			e1 := typ.Construct.IDPR.BeautifulError(fmt.Errorf("constructor tag #%08x is used again by %q", crc32, typ.Construct.Name.String()))
-			return tlast.BeautifulError2(e1, err)
-		}
-		constructorTags[crc32] = typ.Construct.IDPR.BeautifulError(errSeeHere)
-	}
-	for _, typ := range k.filesTL2 {
-		if typ.IsFunction {
-			crc32 := typ.FuncDecl.Magic
-			if crc32 != 0 {
-				if err, ok := constructorTags[crc32]; ok {
-					e1 := typ.FuncDecl.PRID.BeautifulError(fmt.Errorf("constructor tag #%08x is used again by %q", crc32, typ.FuncDecl.Name.String()))
-					return tlast.BeautifulError2(e1, err)
-				}
-				constructorTags[crc32] = typ.FuncDecl.PRID.BeautifulError(errSeeHere)
-			}
-			continue
-		}
-		crc32 := typ.TypeDecl.Magic
-		if crc32 != 0 {
-			if err, ok := constructorTags[crc32]; ok {
-				e1 := typ.TypeDecl.PRID.BeautifulError(fmt.Errorf("constructor tag #%08x is used again by %q", crc32, typ.TypeDecl.Name.String()))
-				return tlast.BeautifulError2(e1, err)
-			}
-			constructorTags[crc32] = typ.TypeDecl.PRID.BeautifulError(errSeeHere)
-		}
+		return original
 	}
 	return nil
 }

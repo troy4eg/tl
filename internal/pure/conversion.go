@@ -40,20 +40,5 @@ func (k *Kernel) convertTypeArgument(tra tlast.ArithmeticOrType) tlast.TL2TypeAr
 }
 
 func (k *Kernel) convertTypeRef(tr tlast.TypeRef) tlast.TL2TypeRef {
-	result := tlast.TL2TypeRef{
-		SomeType: tlast.TL2TypeApplication{
-			Name:        tlast.TL2TypeName(tr.Type),
-			Arguments:   nil,
-			PR:          tr.PR,
-			PRName:      tr.PR,
-			PRArguments: tr.PRArgs,
-			Bare:        tr.Bare,
-		},
-		PR: tr.PR,
-	}
-	for _, arg := range tr.Args {
-		result.SomeType.Arguments = append(result.SomeType.Arguments,
-			k.convertTypeArgument(arg))
-	}
-	return result
+	return tlast.TL1TypeRef(tr)
 }
