@@ -15,17 +15,18 @@ func (d *document) parseTL(path string) {
 	for _, c := range ast {
 		b, e := d.parserRange(c.PR)
 		nb, ne := d.parserRange(c.Construct.NamePR)
-		s := &symbol{name: c.Construct.Name.String(), kind: 23, begin: b, end: e, nameBegin: nb, nameEnd: ne,
+		s := &symbol{name: c.Construct.Name.String(), kind: 23, globalKind: "constructor", begin: b, end: e, nameBegin: nb, nameEnd: ne,
 			signature: strings.TrimSpace(d.text[b:e]), comment: cleanComment(c.CommentBefore), locals: map[string]*symbol{}}
 		if c.IsFunction {
 			s.kind = 12
+			s.globalKind = "function"
 		} else {
 			d.exported = append(d.exported, s)
 		}
 		for _, p := range c.TemplateArguments {
 			pb, pe := d.parserRange(p.PR)
 			nb, ne := d.tlNameRange(p.PR, p.FieldName)
-			local := &symbol{name: p.FieldName, kind: 26, begin: pb, end: pe, nameBegin: nb, nameEnd: ne, signature: strings.TrimSpace(d.text[pb:pe])}
+			local := &symbol{name: p.FieldName, kind: 26, scope: s, begin: pb, end: pe, nameBegin: nb, nameEnd: ne, signature: strings.TrimSpace(d.text[pb:pe])}
 			s.locals[p.FieldName] = local
 			s.children = append(s.children, local)
 		}
@@ -35,7 +36,7 @@ func (d *document) parseTL(path string) {
 		} else {
 			b, e := d.parserRange(c.TypeDecl.PR)
 			nb, ne := d.parserRange(c.TypeDecl.NamePR)
-			typeSymbol := &symbol{name: c.TypeDecl.Name.String(), kind: 23, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: s.signature, comment: s.comment}
+			typeSymbol := &symbol{name: c.TypeDecl.Name.String(), kind: 23, globalKind: "type", begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: s.signature, comment: s.comment}
 			s.children = append(s.children, typeSymbol)
 			d.exported = append(d.exported, typeSymbol)
 			for i, name := range c.TypeDecl.Arguments {
@@ -92,7 +93,7 @@ func (d *document) addTLFields(parent *symbol, fields []tlast.Field, locals map[
 		}
 		b, e := d.parserRange(f.PR)
 		nb, ne := d.parserRange(f.PRName)
-		child := &symbol{name: f.FieldName, kind: 8, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: strings.TrimSpace(d.text[b:e]), comment: cleanComment(f.CommentBefore)}
+		child := &symbol{name: f.FieldName, kind: 8, scope: parent, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: strings.TrimSpace(d.text[b:e]), comment: cleanComment(f.CommentBefore)}
 		locals[f.FieldName] = child
 		children[i] = child
 		parent.children = append(parent.children, child)

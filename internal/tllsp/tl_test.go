@@ -77,3 +77,33 @@ func TestManualTL2LanguageOnTLFileSurvivesEdits(t *testing.T) {
 		t.Fatalf("manual language was ignored: %+v", defs)
 	}
 }
+
+func TestLegacyReqResultDoesNotBlockRename(t *testing.T) {
+	root := t.TempDir()
+	legacyPath := filepath.Join(root, "legacy.tl")
+	legacyURI := uriFromPath(legacyPath)
+	legacy := "---types---\n_ {X:Type} result:X = ReqResult X;\nuse result:(ReqResult int) = Use;\n"
+	writeFile(t, legacyPath, legacy)
+	uri := uriFromPath(filepath.Join(root, "editor.tl2"))
+	results := runSession(t,
+		rpc("initialize", 0, map[string]any{"rootUri": uriFromPath(root)}),
+		openDoc(uri, "Item = value:int32;", 1),
+		rpc("textDocument/rename", 1, renameParams(uri, position{}, "Renamed")),
+		rpc("textDocument/definition", 2, docParams(legacyURI, newSource(legacy).position(strings.LastIndex(legacy, "ReqResult")))),
+		rpc("textDocument/rename", 3, renameParams(legacyURI, newSource(legacy).position(strings.Index(legacy, "result:X")+len("result:")), "T")))
+	var edit workspaceEdit
+	response(t, results, 1, &edit)
+	if len(edit.Changes[uri]) != 1 {
+		t.Fatalf("legacy wrapper blocked unrelated rename: %+v", edit)
+	}
+	var defs []location
+	response(t, results, 2, &defs)
+	if len(defs) != 1 || defs[0].Range.Start != newSource(legacy).position(strings.Index(legacy, "ReqResult")) {
+		t.Fatalf("legacy wrapper definition is missing: %+v", defs)
+	}
+	response(t, results, 3, &edit)
+	got := applyEdits(t, legacy, edit.Changes[legacyURI])
+	if got != strings.ReplaceAll(legacy, "X", "T") {
+		t.Fatalf("template rename changed anonymous constructor or wrapper type: %q", got)
+	}
+}

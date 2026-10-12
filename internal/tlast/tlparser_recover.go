@@ -55,6 +55,15 @@ func ParseTLFileRecovering(text, file string) (TL, []*ParseError) {
 			}
 			continue
 		}
+		// AllowBuiltin classifies a standalone '_' as an upper-case type name
+		// for internal RHS placeholders. At a constructor position it instead
+		// means the legacy anonymous constructor accepted by AllowDirty.
+		// Reclassify only this copied token, preserving builtin RHS placeholders
+		// and leaving the strict generator parser unchanged.
+		_, constructor := parseModifiers(it, it.front().pos)
+		if tok := constructor.front(); tok.tokenType == ucIdent && tok.val == "_" {
+			tokens[constructor.offset].tokenType = lcIdent
+		}
 		comb, _, err := parseCombinator(commentStart, it, functionSection, opts.AllowBuiltin)
 		if err != nil {
 			var pe *ParseError

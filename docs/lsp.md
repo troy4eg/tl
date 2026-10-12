@@ -39,6 +39,8 @@ logs go to stderr.
 - Syntax diagnostics from the existing TL and TL2 lexer/parsers.
 - Unknown-type diagnostics, with configurable severity.
 - Go to Definition across files, including local template parameters.
+- Find References across files, with optional declaration locations.
+- Rename types, constructors, functions, variants and local parameters/fields.
 - Hover with declarations and documentation comments.
 - Completion of primitive types, schema types and local template/field arguments.
 - Document symbols with fields, union variants and template parameters.
@@ -80,7 +82,7 @@ Runtime configuration uses the same object under `settings.tl2` in
 `workspace/didChangeConfiguration`. Initialization options and configuration
 contain no editor-specific keys.
 
-## Scope of the first version
+## Scope and limitations
 
 The recovery parser skips malformed declarations up to the next semicolon,
 retaining other valid declarations and their original source positions. An
@@ -94,9 +96,40 @@ field dependencies, CRC conflicts or binary compatibility. Ambiguous global
 definitions return all matching locations. Configure schema boundaries to avoid
 unrelated declarations with the same name.
 
-Rename, references, formatting, code actions and incremental semantic
-compilation are not implemented. File notifications rebuild the disk index;
+Formatting, code actions and incremental semantic compilation are not
+implemented. File notifications rebuild the disk index;
 large-workspace performance has not been benchmarked.
+
+## References and rename
+
+`textDocument/references` honors `context.includeDeclaration`. Matches come
+from parsed declarations and resolved references; comments, CRC tags and names
+in unrelated local scopes are excluded. Several TL constructors declaring the
+same result type contribute declaration sites of that one type.
+
+`textDocument/prepareRename` returns the name range and placeholder;
+`textDocument/rename` returns a workspace edit without writing files. Clients
+supporting `workspace.workspaceEdit.documentChanges` receive document versions
+for open buffers and `null` for disk documents. Other clients receive `changes`.
+Editor undo/preview and application of the edit stay in the editor.
+
+Qualified names are renamed as a whole (for example, `api.Item` to
+`api.Record`). New names must follow TL identifier syntax. Built-ins and
+anonymous/ignored fields cannot be renamed. Duplicate global declarations are
+ambiguous, except for shared TL result types; narrow `schemaPaths` to one schema.
+Global rename requires all indexed schemas to parse successfully so usages in
+skipped declarations cannot be missed. A blocked rename lists up to five errors
+with absolute file paths and 1-based line/column numbers, including unopened
+files. The language server output contains the full list.
+References still work in parsed parts
+of a malformed file, and local rename remains available in complete declarations.
+
+Before returning edits, the server reparses affected buffers and verifies that
+all indexed references retain their resolved declarations. Name collisions and
+reference capture are rejected. This uses the LSP index, not the full compiler's
+semantic or compatibility validation. Explicit CRC tags are preserved; changing
+TL1 declarations can change implicitly calculated constructor CRCs and generated
+API names. References outside the configured schema paths are not included.
 
 ## Editor clients
 

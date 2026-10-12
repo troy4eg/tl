@@ -15,6 +15,8 @@ var primitives = []string{"int32", "uint32", "int64", "uint64", "float32", "floa
 
 type symbol struct {
 	name, signature, comment       string
+	globalKind                     string
+	scope                          *symbol
 	kind                           int
 	begin, end, nameBegin, nameEnd int
 	children                       []*symbol
@@ -67,13 +69,14 @@ func parseDocumentLanguage(uri, text string, version int, open bool, language st
 	}
 	for _, comb := range ast.Combinators {
 		b, e := d.parserRange(comb.PR)
-		s := &symbol{begin: b, end: e, kind: 23, comment: cleanComment(comb.CommentBefore), locals: map[string]*symbol{}}
+		s := &symbol{begin: b, end: e, kind: 23, globalKind: "type", comment: cleanComment(comb.CommentBefore), locals: map[string]*symbol{}}
 		copyComb := comb
 		copyComb.CommentBefore = ""
 		s.signature = copyComb.String()
 		var namePR tlast.PositionRange
 		if comb.IsFunction {
 			s.name, s.kind = comb.FuncDecl.Name.String(), 12
+			s.globalKind = "function"
 			namePR = comb.FuncDecl.PRName
 		} else {
 			s.name = comb.TypeDecl.Name.String()
@@ -89,7 +92,7 @@ func parseDocumentLanguage(uri, text string, version int, open bool, language st
 		for _, p := range comb.TypeDecl.TemplateArguments {
 			pb, pe := d.parserRange(p.PR)
 			nb, ne := d.parserRange(p.PRName)
-			local := &symbol{name: p.Name, kind: 26, begin: pb, end: pe, nameBegin: nb, nameEnd: ne, signature: p.Name + ": " + p.Category.String()}
+			local := &symbol{name: p.Name, kind: 26, scope: s, begin: pb, end: pe, nameBegin: nb, nameEnd: ne, signature: p.Name + ": " + p.Category.String()}
 			s.locals[p.Name] = local
 			s.children = append(s.children, local)
 		}
@@ -124,7 +127,7 @@ func (d *document) addFields(parent *symbol, fields []tlast.TL2Field, locals map
 		}
 		b, e := d.parserRange(field.PR)
 		nb, ne := d.parserRange(field.PRName)
-		child := &symbol{name: field.Name, kind: 8, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: field.Name + ": " + field.Type.String(), comment: cleanComment(field.CommentBefore)}
+		child := &symbol{name: field.Name, kind: 8, scope: parent, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: field.Name + ": " + field.Type.String(), comment: cleanComment(field.CommentBefore)}
 		fieldSymbols[i] = child
 		locals[field.Name] = child
 	}
@@ -153,7 +156,7 @@ func (d *document) addDefinition(parent *symbol, def tlast.TL2TypeDefinition, lo
 		}
 		b, e := d.parserRange(variant.PR)
 		nb, ne := d.parserRange(variant.PRName)
-		child := &symbol{name: variant.Name, kind: 22, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: variant.Name, comment: cleanComment(variant.CommentBefore)}
+		child := &symbol{name: variant.Name, kind: 22, scope: parent, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: variant.Name, comment: cleanComment(variant.CommentBefore)}
 		if variant.IsTypeAlias {
 			d.addTypeRef(variant.TypeAlias, variantLocals)
 		} else {

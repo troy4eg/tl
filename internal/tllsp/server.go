@@ -28,6 +28,7 @@ type server struct {
 	options               options
 	initialized, shutdown bool
 	dynamicWatchers       bool
+	documentChanges       bool
 }
 
 // Run serves one LSP connection. Only protocol messages are written to out;
@@ -106,6 +107,9 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 			InitializationOptions json.RawMessage `json:"initializationOptions"`
 			Capabilities          struct {
 				Workspace struct {
+					WorkspaceEdit struct {
+						DocumentChanges bool `json:"documentChanges"`
+					} `json:"workspaceEdit"`
 					DidChangeWatchedFiles struct {
 						DynamicRegistration bool `json:"dynamicRegistration"`
 					} `json:"didChangeWatchedFiles"`
@@ -135,13 +139,15 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 		}
 		s.reindex()
 		s.dynamicWatchers = p.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration
+		s.documentChanges = p.Capabilities.Workspace.WorkspaceEdit.DocumentChanges
 		s.initialized = true
 		return map[string]any{
-			"serverInfo": map[string]any{"name": "tl2lsp", "version": "0.2.0"},
+			"serverInfo": map[string]any{"name": "tl2lsp", "version": "0.3.2"},
 			"capabilities": map[string]any{
 				"positionEncoding":   "utf-16",
 				"textDocumentSync":   map[string]any{"openClose": true, "change": 2, "save": map[string]any{"includeText": false}},
 				"definitionProvider": true, "hoverProvider": true, "documentSymbolProvider": true,
+				"referencesProvider": true, "renameProvider": map[string]any{"prepareProvider": true},
 				"workspaceSymbolProvider": true,
 				"completionProvider":      map[string]any{"triggerCharacters": []string{".", ":", "<", "["}},
 				"semanticTokensProvider":  map[string]any{"legend": map[string]any{"tokenTypes": tokenTypes, "tokenModifiers": []string{}}, "full": true},
@@ -177,7 +183,7 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 		return out, nil
 	}
 	switch method {
-	case "textDocument/definition", "textDocument/hover", "textDocument/completion", "textDocument/documentSymbol", "textDocument/semanticTokens/full":
+	case "textDocument/definition", "textDocument/hover", "textDocument/completion", "textDocument/documentSymbol", "textDocument/semanticTokens/full", "textDocument/references", "textDocument/prepareRename", "textDocument/rename":
 	default:
 		return nil, &rpcError{-32601, "method not found: " + method}
 	}
@@ -186,6 +192,10 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 			URI string `json:"uri"`
 		} `json:"textDocument"`
 		Position position `json:"position"`
+		Context  struct {
+			IncludeDeclaration bool `json:"includeDeclaration"`
+		} `json:"context"`
+		NewName string `json:"newName"`
 	}
 	if err := decodeParams(raw, &p); err != nil {
 		return nil, err
@@ -206,6 +216,22 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 	}
 	if method == "textDocument/completion" {
 		return s.completion(d, offset), nil
+	}
+	if method == "textDocument/references" {
+		return s.references(d, offset, p.Context.IncludeDeclaration), nil
+	}
+	if method == "textDocument/prepareRename" {
+		target := s.targetAt(d, offset)
+		if len(target.defs) == 0 {
+			return nil, nil
+		}
+		if err := target.check(); err != nil {
+			return nil, err
+		}
+		return map[string]any{"range": target.span, "placeholder": target.defs[0].sym.name}, nil
+	}
+	if method == "textDocument/rename" {
+		return s.rename(d, offset, p.NewName)
 	}
 	defs, refRange := s.symbolAt(d, offset)
 	if method == "textDocument/definition" {

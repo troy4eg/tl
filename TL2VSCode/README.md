@@ -7,7 +7,8 @@ server shared with the Zed client.
 ## Features
 
 - Automatic language detection and TextMate highlighting for `.tl` (TL) and `.tl2` (TL2).
-- Go to Definition across files and local template parameters.
+- Go to Definition and Find References across files and local template parameters.
+- Rename types, constructors, functions, variants and local parameters/fields.
 - Hover, type completion, document outline and workspace symbols.
 - Syntax and configurable unknown-type diagnostics.
 - Semantic tokens from the shared server.
@@ -62,6 +63,12 @@ needed, set `tl2.server.path` to the executable's absolute path.
 Language features require the server executable. It is installed independently
 and is not downloaded or bundled by this extension.
 
+Use **Go to References** / **Find All References** to find usages and
+**Rename Symbol** (F2) to rename. Both features come from the shared server.
+For qualified names, the rename input contains the complete name (`api.Item`).
+See [rename rules](../docs/lsp.md#references-and-rename) for schema boundaries,
+collision checks and CRC behavior.
+
 ## Settings
 
 | Setting | Default | Purpose |
@@ -85,11 +92,34 @@ configuration.
 ```sh
 npm ci
 npx @vscode/vsce package
-code --install-extension tl2-0.2.0.vsix
+code --install-extension tl2-0.3.2.vsix
 ```
 
 The extension requires a trusted workspace and VS Code 1.82 or newer. It is not
 yet published in the marketplace.
+
+## Editor integration test
+
+After `make build-lsp` from the repository root and `npm ci` / `npm run compile`
+from this directory, run against a temporary profile and workspace:
+
+```sh
+task_tmp="$(mktemp -d)"
+mkdir -p "$task_tmp/workspace"
+PATH="$PWD/../target/bin:$PATH" code \
+  --user-data-dir "$task_tmp/profile" \
+  --extensions-dir "$task_tmp/extensions" \
+  --extensionDevelopmentPath="$PWD" \
+  --extensionTestsPath="$PWD/test/editor.cjs" \
+  --disable-workspace-trust --skip-welcome --skip-release-notes \
+  "$task_tmp/workspace"
+```
+
+The test exercises file detection, references and rename through VS Code's
+providers and applies workspace edits to temporary editor buffers. It checks
+shared TL types, bare constructors, TL2 types, local template scope, comments
+and explicit CRC tags. Results are saved to `editor-results.json` in the test
+workspace. Test sources are excluded from the VSIX.
 
 ## Replacing the icon
 

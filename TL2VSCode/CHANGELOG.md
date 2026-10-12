@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.2
+
+- Accept the legacy TL declaration `_ {X:Type} result:X = ReqResult X;` in the editor parser without breaking internal builtin placeholders.
+
+## 0.3.1
+
+- Report the file path, line, column and parser error when syntax errors block rename.
+- Show up to five errors in the message and log the complete list to the server output.
+
+## 0.3.0
+
+- Find references across TL and TL2 schemas, including local parameters and fields.
+- Rename symbols with prepareRename and workspace edits, including shared TL result types.
+- Reject ambiguous names, name collisions, reference capture and invalid identifiers.
+- Use versioned edits for clients that support documentChanges.
+
 ## 0.2.0
 
 - Register `.tl` as TL alongside `.tl2` as TL2 and connect both to the server.
