@@ -65,14 +65,38 @@ func substituteBindings(ref tlast.TL2TypeRef, bindings map[string]tlast.TL2TypeR
 	return ref
 }
 
+const maxCompletionItems = 256
+
+// Internal spelling fixes and compatibility benchmarks need the complete set.
 func (s *server) completion(d *document, offset int) []completionItem {
+	items, _ := s.collectCompletion(d, offset, 0, false, false)
+	return items
+}
+
+func (s *server) complete(d *document, offset int) any {
+	items, incomplete := s.collectCompletion(d, offset, s.completionLimit, s.resolveCompletionDetail, s.resolveCompletionDocumentation)
+	if incomplete {
+		return completionList{true, items}
+	}
+	return items
+}
+
+func (s *server) collectCompletion(d *document, offset, limit int, resolveDetail, resolveDocumentation bool) ([]completionItem, bool) {
 	a := d.assistance(offset, true)
 	out := []completionItem{}
+	if limit > 0 {
+		out = make([]completionItem, 0, limit)
+	}
+	incomplete := false
 	seen := map[string]bool{}
 	editRange := d.span(a.begin, a.end)
-	add := func(name string, kind int, detail, comment, insert string, snippet bool) {
+	add := func(name string, kind int, detail, comment, insert string, snippet bool) *completionItem {
 		if seen[name] || !strings.HasPrefix(name, a.prefix) {
-			return
+			return nil
+		}
+		if limit > 0 && len(out) >= limit {
+			incomplete = true
+			return nil
 		}
 		seen[name] = true
 		item := completionItem{Label: name, Kind: kind, Detail: detail, TextEdit: &textEdit{editRange, insert}}
@@ -83,9 +107,40 @@ func (s *server) completion(d *document, offset int) []completionItem {
 			item.Documentation = &markup{"plaintext", comment}
 		}
 		out = append(out, item)
+		return &out[len(out)-1]
+	}
+	addSymbol := func(def definition, kind int, insert string, snippet bool) {
+		sym := def.sym
+		if seen[sym.name] || !strings.HasPrefix(sym.name, a.prefix) {
+			return
+		}
+		if limit > 0 && len(out) >= limit {
+			incomplete = true
+			return
+		}
+		detail, comment := "", ""
+		if !resolveDetail {
+			detail = sym.detail()
+		}
+		if !resolveDocumentation {
+			comment = sym.comment
+		}
+		if item := add(sym.name, kind, detail, comment, insert, snippet); item != nil && (resolveDetail || resolveDocumentation) {
+			item.Data = &completionData{s.generation, def.doc.uri, sym.nameBegin, sym.name}
+		}
+	}
+	addSnippets := func() {
+		if s.snippetSupport && !(d.language == "tl" && a.call != nil) {
+			for _, snip := range completionSnippets(d.language, a.kind) {
+				if a.kind == "type" && len(s.definitions(snip.label)) > 0 {
+					continue
+				}
+				add(snip.label, 15, snip.detail, "", snip.text, true)
+			}
+		}
 	}
 	if a.kind == "none" {
-		return out
+		return out, false
 	}
 	if a.kind == "category" {
 		add("Type", 14, "Type parameter category", "", "Type", false)
@@ -125,16 +180,22 @@ func (s *server) completion(d *document, offset int) []completionItem {
 			a.kind = "nat"
 		}
 		if !wantType && !wantNat {
-			return out
+			return out, false
 		}
-		for _, local := range a.locals {
+		localNames := make([]string, 0, len(a.locals))
+		for name := range a.locals {
+			localNames = append(localNames, name)
+		}
+		sort.Strings(localNames)
+		for _, localName := range localNames {
+			local := a.locals[localName]
 			if local.kind == 26 && (local.nat && (wantNat || a.mask) || !local.nat && wantType) ||
 				(wantNat || a.mask) && local.nameBegin < a.fieldBegin && s.natField(d, local) {
 				kind := 25
 				if local.kind == 8 {
 					kind = 5
 				}
-				add(local.name, kind, local.detail(), local.comment, local.name, false)
+				addSymbol(definition{d, local}, kind, local.name, false)
 			}
 		}
 		if wantNat {
@@ -143,7 +204,7 @@ func (s *server) completion(d *document, offset int) []completionItem {
 		if wantType {
 			// Reserve once for broad results. Growing the item slice repeatedly
 			// copied several MiB on every empty-prefix completion.
-			if s.index != nil {
+			if s.index != nil && limit == 0 {
 				capacity := len(out) + len(d.primitives()) + 3
 				s.index.byName.prefix(a.prefix, func(name string, defs []definition) {
 					if name == "_" {
@@ -175,11 +236,17 @@ func (s *server) completion(d *document, offset int) []completionItem {
 				}
 				add(p, 14, "Built-in type", "", p, false)
 			}
+			addSnippets()
 			next := nextAssistCharacter(d.text, a.end)
 			existing := next == '<' || a.apply && (nameByte(next) || next == '%' || next == '(')
-			addGlobal := func(sym *symbol) {
-				if sym.kind == 12 || sym.name == "_" || a.bare && sym.globalKind != "constructor" {
-					return
+			addGlobal := func(def definition) bool {
+				sym := def.sym
+				if sym.kind == 12 || sym.name == "_" || a.bare && sym.globalKind != "constructor" || seen[sym.name] || !strings.HasPrefix(sym.name, a.prefix) {
+					return true
+				}
+				if limit > 0 && len(out) >= limit {
+					incomplete = true
+					return false
 				}
 				insert, snippet := sym.name, false
 				if s.snippetSupport && len(sym.params) > 0 && !a.resultDeclaration && !existing {
@@ -205,30 +272,53 @@ func (s *server) completion(d *document, offset int) []completionItem {
 				if sym.kind == 10 {
 					kind = 13
 				}
-				add(sym.name, kind, sym.detail(), sym.comment, insert, snippet)
+				addSymbol(def, kind, insert, snippet)
+				return true
 			}
 			if s.index != nil {
-				s.index.byName.prefix(a.prefix, func(_ string, defs []definition) {
+				s.index.byName.prefixWhile(a.prefix, func(_ string, defs []definition) bool {
 					for _, def := range defs {
-						addGlobal(def.sym)
+						if !addGlobal(def) {
+							return false
+						}
 					}
+					return true
 				})
 			} else {
 				for _, doc := range s.documents() {
 					for _, sym := range doc.exported {
-						addGlobal(sym)
+						addGlobal(definition{doc, sym})
 					}
 				}
 			}
 		}
 	}
-	if s.snippetSupport && !(d.language == "tl" && a.call != nil) {
-		for _, snip := range completionSnippets(d.language, a.kind) {
-			add(snip.label, 15, snip.detail, "", snip.text, true)
-		}
-	}
+	addSnippets()
 	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
-	return out
+	return out, incomplete
+}
+
+func (s *server) resolveCompletion(item completionItem) completionItem {
+	data := item.Data
+	if data == nil || data.Generation != s.generation || data.Name != item.Label {
+		return item
+	}
+	doc := s.docs[data.URI]
+	if doc == nil {
+		return item
+	}
+	walkSymbols(doc.symbols, func(sym *symbol) {
+		if sym.nameBegin != data.Offset || sym.name != data.Name {
+			return
+		}
+		if s.resolveCompletionDetail {
+			item.Detail = sym.detail()
+		}
+		if s.resolveCompletionDocumentation && sym.comment != "" {
+			item.Documentation = &markup{"plaintext", sym.comment}
+		}
+	})
+	return item
 }
 
 func nextAssistCharacter(text string, offset int) byte {

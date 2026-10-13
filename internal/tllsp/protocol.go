@@ -63,12 +63,25 @@ type markup struct {
 }
 
 type completionItem struct {
-	Label            string    `json:"label"`
-	Kind             int       `json:"kind"`
-	Detail           string    `json:"detail,omitempty"`
-	Documentation    *markup   `json:"documentation,omitempty"`
-	TextEdit         *textEdit `json:"textEdit,omitempty"`
-	InsertTextFormat int       `json:"insertTextFormat,omitempty"`
+	Label            string          `json:"label"`
+	Kind             int             `json:"kind"`
+	Detail           string          `json:"detail,omitempty"`
+	Documentation    *markup         `json:"documentation,omitempty"`
+	TextEdit         *textEdit       `json:"textEdit,omitempty"`
+	InsertTextFormat int             `json:"insertTextFormat,omitempty"`
+	Data             *completionData `json:"data,omitempty"`
+}
+
+type completionData struct {
+	Generation uint64 `json:"generation"`
+	URI        string `json:"uri"`
+	Offset     int    `json:"offset"`
+	Name       string `json:"name"`
+}
+
+type completionList struct {
+	IsIncomplete bool             `json:"isIncomplete"`
+	Items        []completionItem `json:"items"`
 }
 
 type parameterInformation struct {

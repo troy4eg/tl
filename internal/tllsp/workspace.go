@@ -19,6 +19,7 @@ type globalBucket struct {
 // while the connection applies edits to a new one.
 type workspaceIndex struct {
 	docs         indexTable[*document]
+	syntax       indexTable[*document]
 	byName       indexTable[[]definition]
 	globals      indexTable[*globalBucket]
 	refs         indexTable[map[string][]reference]
@@ -30,6 +31,15 @@ type workspaceIndex struct {
 
 	orderedOnce sync.Once
 	ordered     []*document
+}
+
+// Copy the immutable tables, with fresh lazy document-list state. Callers clone
+// an individual table before editing it; published snapshots remain unchanged.
+func (idx *workspaceIndex) fork() *workspaceIndex {
+	return &workspaceIndex{docs: idx.docs, syntax: idx.syntax, byName: idx.byName,
+		globals: idx.globals, refs: idx.refs, checks: idx.checks,
+		aliasUsers: idx.aliasUsers, relatedUsers: idx.relatedUsers,
+		globalFiles: idx.globalFiles, validator: idx.validator}
 }
 
 func (idx *workspaceIndex) documents() []*document {
@@ -74,6 +84,7 @@ func (s *server) refreshIndex(full bool) {
 	idx := &workspaceIndex{globalFiles: map[string]bool{}}
 	if old == nil || full {
 		idx.docs = newIndexTable[*document]()
+		idx.syntax = newIndexTable[*document]()
 		idx.byName = newIndexTable[[]definition]()
 		idx.globals = newIndexTable[*globalBucket]()
 		idx.refs = newIndexTable[map[string][]reference]()
@@ -82,6 +93,7 @@ func (s *server) refreshIndex(full bool) {
 		idx.relatedUsers = newIndexTable[map[string]bool]()
 	} else {
 		idx.docs = old.docs.clone()
+		idx.syntax = old.syntax.clone()
 		idx.byName = old.byName.clone()
 		idx.globals = old.globals.clone()
 		idx.refs = old.refs.clone()
@@ -119,6 +131,11 @@ func (s *server) refreshIndex(full bool) {
 		}
 		if d := s.docs[uri]; d != nil {
 			idx.docs.set(uri, d)
+			if len(d.errors) > 0 {
+				idx.syntax.set(uri, d)
+			} else {
+				idx.syntax.delete(uri)
+			}
 			for _, sym := range d.exported {
 				names[sym.name] = append(names[sym.name], definition{d, sym})
 			}
@@ -130,6 +147,7 @@ func (s *server) refreshIndex(full bool) {
 			}
 		} else {
 			idx.docs.delete(uri)
+			idx.syntax.delete(uri)
 		}
 	}
 	if len(changed) == 0 && old != nil && !full {
@@ -235,25 +253,6 @@ func (s *server) refreshIndex(full bool) {
 			}
 		}
 	}
-	for uri := range affected {
-		for _, item := range idx.checks.get(uri) {
-			if item.Related != nil {
-				updateUsers(idx.relatedUsers, uriFromPath(item.Related.Begin.FileName()), uri, false)
-			}
-		}
-		idx.checks.delete(uri)
-		if d := s.docs[uri]; d != nil {
-			checks := idx.validator.Validate(tlast.SchemaDeclarations{TL: d.tl, TL2: d.tl2})
-			if len(checks) > 0 {
-				idx.checks.set(uri, checks)
-			}
-			for _, item := range checks {
-				if item.Related != nil {
-					updateUsers(idx.relatedUsers, uriFromPath(item.Related.Begin.FileName()), uri, true)
-				}
-			}
-		}
-	}
 	globalErrors := idx.validator.GlobalErrors()
 	for _, item := range globalErrors {
 		idx.globalFiles[uriFromPath(item.Pos.Begin.FileName())] = true
@@ -266,29 +265,29 @@ func (s *server) refreshIndex(full bool) {
 	for uri := range idx.globalFiles {
 		affected[uri] = true
 	}
+	for uri := range s.pendingDiagnostics {
+		affected[uri] = true
+	}
 	s.generation++
 	s.index = idx
 	s.byName = nil
 	if old == nil || full {
 		s.semantic = map[string][]diagnostic{}
-	} else {
-		s.semantic = maps.Clone(s.semantic)
 	}
-	for uri := range affected {
-		delete(s.semantic, uri)
-	}
-	s.addSemanticDiagnostics(globalErrors)
-	for uri := range affected {
-		s.addSemanticDiagnostics(idx.checks.get(uri))
-	}
-	if s.diagnosticChanges == nil {
-		s.diagnosticChanges = map[string]bool{}
-	}
-	for uri := range affected {
-		s.diagnosticChanges[uri] = true
-	}
+	s.markDiagnosticChanges(affected)
 	if full && old != nil {
 		old.docs.each(func(uri string, _ *document) { s.diagnosticChanges[uri] = true })
+	}
+	job := s.newDiagnosticJob(affected)
+	if s.queueDiagnostics != nil && old != nil {
+		s.pendingDiagnostics = affected
+		s.queueDiagnostics(job)
+	} else {
+		if s.queueDiagnostics != nil {
+			s.queueDiagnostics(nil)
+		}
+		s.applyDiagnostics(job.run())
+		job.cancel()
 	}
 }
 

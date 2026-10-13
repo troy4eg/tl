@@ -96,8 +96,13 @@ func TestTypingChangesCoalesceAndRequestsSeeLatestVersion(t *testing.T) {
 	messages = append(messages, rpc("textDocument/hover", 1, docParams(uri, position{})), rpc("shutdown", 2, nil), rpc("exit", nil, nil))
 	results := runSession(t, messages...)
 	items := publications(t, results, uri)
-	if len(items) != 2 || items[1].Version == nil || *items[1].Version != 11 {
+	if len(items) == 0 || items[len(items)-1].Version == nil || *items[len(items)-1].Version != 11 {
 		t.Fatalf("obsolete typing diagnostics published: %+v", items)
+	}
+	for _, pub := range items {
+		if pub.Version == nil || *pub.Version != 1 && *pub.Version != 11 {
+			t.Fatalf("intermediate version published: %+v", pub)
+		}
 	}
 	var hover struct{ Contents markup }
 	response(t, results, 1, &hover)
@@ -129,10 +134,10 @@ func TestProtocolCancellationAndCompletion(t *testing.T) {
 	if err := responseError(t, results, 1); err.Code != requestCancelled {
 		t.Fatalf("cancel ignored: %+v", err)
 	}
-	var completion []completionItem
+	var completion completionList
 	response(t, results, 2, &completion)
-	if len(completion) < 1000 {
-		t.Fatalf("completion missing: %d", len(completion))
+	if !completion.IsIncomplete || len(completion.Items) != maxCompletionItems {
+		t.Fatalf("bounded completion missing: %+v", completion)
 	}
 	seen := map[string]bool{}
 	for _, result := range results {
@@ -147,10 +152,10 @@ func TestProtocolCancellationAndCompletion(t *testing.T) {
 
 func TestDiagnosticsSkipUnchangedButPublishVersions(t *testing.T) {
 	uri := "file:///tmp/diagnostic-versions.tl2"
-	results := runSession(t, rpc("initialize", 0, map[string]any{}), openDoc(uri, "Item = x:Missing;", 1),
-		rpc("textDocument/didSave", nil, docParams(uri, position{})),
-		rpc("textDocument/didChange", nil, map[string]any{"textDocument": map[string]any{"uri": uri, "version": 2}, "contentChanges": []any{map[string]any{"text": "Item = x:Missing;"}}}),
-		rpc("shutdown", 3, nil), rpc("exit", nil, nil))
+	results := runDiagnosticSession(t, uri,
+		[]map[string]any{rpc("initialize", 0, map[string]any{}), openDoc(uri, "Item = x:Missing;", 1)},
+		[]map[string]any{rpc("textDocument/didSave", nil, docParams(uri, position{})), rpc("textDocument/didChange", nil, map[string]any{"textDocument": map[string]any{"uri": uri, "version": 2}, "contentChanges": []any{map[string]any{"text": "Item = x:Missing;"}}})},
+	)
 	items := publications(t, results, uri)
 	if len(items) != 2 || items[1].Version == nil || *items[1].Version != 2 {
 		t.Fatalf("publication versions: %+v", items)

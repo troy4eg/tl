@@ -188,13 +188,9 @@ func TestSchemaPathsAndTL1Dependencies(t *testing.T) {
 	writeFile(t, filepath.Join(root, "external.tl"), "external id:int = External;")
 	writeFile(t, filepath.Join(root, "unrelated.tl2"), "Unrelated = x:int32;")
 	uri := uriFromPath(filepath.Join(root, "editor.tl2"))
-	results := runSession(t,
-		rpc("initialize", 0, map[string]any{"rootUri": uriFromPath(root), "initializationOptions": map[string]any{"schemaPaths": []string{"external.tl"}}}),
-		openDoc(uri, "Editor = a:External b:Unrelated;", 1),
-		rpc("textDocument/definition", 1, docParams(uri, position{0, 12})),
-		rpc("textDocument/completion", 2, docParams(uri, position{0, 11})),
-		rpc("workspace/didChangeConfiguration", nil, map[string]any{"settings": map[string]any{"tl2": map[string]any{"diagnostics": map[string]any{"unknownTypes": "off"}}}}),
-		rpc("shutdown", 3, nil), rpc("exit", nil, nil),
+	results := runDiagnosticSession(t, uri,
+		[]map[string]any{rpc("initialize", 0, map[string]any{"rootUri": uriFromPath(root), "initializationOptions": map[string]any{"schemaPaths": []string{"external.tl"}}}), openDoc(uri, "Editor = a:External b:Unrelated;", 1)},
+		[]map[string]any{rpc("textDocument/definition", 1, docParams(uri, position{0, 12})), rpc("textDocument/completion", 2, docParams(uri, position{0, 11})), rpc("workspace/didChangeConfiguration", nil, map[string]any{"settings": map[string]any{"tl2": map[string]any{"diagnostics": map[string]any{"unknownTypes": "off"}}}})},
 	)
 	var defs []location
 	response(t, results, 1, &defs)

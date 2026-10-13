@@ -35,6 +35,13 @@ immutable registry snapshot while later edits publish a new one.
 Unchanged diagnostics are skipped, while diagnostics for open buffers retain
 their document version.
 
+After initialization, semantic checks run in a separate worker with at most one
+active job and one replacement. Edits cancel superseded checks and retain their
+pending dependents for the replacement. Results are published only for the same
+workspace generation, with no newer buffered text. Navigation uses the current
+index immediately. Code actions check the requested document against that index
+if its diagnostic publication is still pending. Shutdown drains final diagnostics.
+
 Consecutive typing changes are combined with a 25 ms debounce and a 100 ms
 maximum scheduling delay. A request flushes pending changes before using the
 index. References, rename, code actions, workspace symbols and document
@@ -44,6 +51,11 @@ running background requests; rename checks cancellation between documents and
 reference checks. A rename prepared for an older workspace is rejected with a
 retry message. Other read-only responses can describe the snapshot at request
 arrival, as permitted by the [LSP base protocol](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/specification.md#cancellationSupport).
+
+Rename candidates reparse edited buffers, update only their navigation buckets,
+and compare bindings in those buffers plus references to the old and new global
+names elsewhere. The new-name index includes unresolved references, so narrowing
+validation still catches accidental capture in an otherwise unchanged document.
 
 The build produces `target/bin/tl2lsp` (`tl2lsp.exe` on Windows when using
 `go build -o target/bin/tl2lsp.exe ./cmd/tl2lsp`). Put the installed executable
@@ -157,6 +169,18 @@ declaration templates (`struct`, `generic`, `alias`, `union`, `function` for TL2
 RPC templates generate a nonzero CRC. Generic type completion supplies editable
 type/natural-number argument slots, unless an argument list already follows the
 identifier. Other clients receive plain identifier edits without snippet syntax.
+
+Completion responses contain at most 256 items. Larger sets use a
+`CompletionList` with `isIncomplete: true`; typing a more specific prefix requests
+a fresh matching range, including names omitted from the initial list. Built-ins,
+local parameters and templates are included before broad global suggestions.
+Clients advertising `completionItem.resolveSupport` for `detail` or
+`documentation` receive those properties through `completionItem/resolve`.
+Insertion edits and snippet placeholders are already complete in the initial
+response and remain unchanged on resolve. Clients without these capabilities
+receive the details eagerly. A stale item is returned without resolving it against
+a newer schema. This follows the
+[LSP completion contract](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocument_completion).
 
 `textDocument/signatureHelp` shows parameter names and `Type`/`#` categories for
 the current generic application. It tracks nested angle applications in both

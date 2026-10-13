@@ -421,6 +421,20 @@ func (s *server) reindex() {
 
 func (s *server) diagnostics(d *document) []diagnostic {
 	out := append([]diagnostic{}, d.errors...)
+	items := s.semantic[d.uri]
+	if s.pendingDiagnostics[d.uri] && s.index != nil {
+		// Code actions run in the request worker and need current diagnostics
+		// even while the workspace-wide publication is pending.
+		current := *s
+		current.semantic = map[string][]diagnostic{}
+		current.addSemanticDiagnostics(s.index.validator.Validate(tlast.SchemaDeclarations{TL: d.tl, TL2: d.tl2}))
+		for _, item := range s.index.validator.GlobalErrors() {
+			if uriFromPath(item.Pos.Begin.FileName()) == d.uri {
+				current.addSemanticDiagnostics([]tlast.SemanticError{item})
+			}
+		}
+		items = current.semantic[d.uri]
+	}
 	severity := 2
 	switch s.options.Diagnostics.UnknownTypes {
 	case "off":
@@ -432,7 +446,7 @@ func (s *server) diagnostics(d *document) []diagnostic {
 	case "hint":
 		severity = 4
 	}
-	for _, item := range s.semantic[d.uri] {
+	for _, item := range items {
 		if item.Code == "unknown-type" {
 			if severity == 0 {
 				continue

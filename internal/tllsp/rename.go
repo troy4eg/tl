@@ -2,6 +2,7 @@ package tllsp
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 )
@@ -92,6 +93,10 @@ func (s *server) occurrences(target renameTarget, includeDeclaration bool) []occ
 		return out
 	}
 	first := target.defs[0]
+	globalMatches := false
+	for _, def := range s.definitions(first.sym.name) {
+		globalMatches = globalMatches || selected[def.sym]
+	}
 	if includeDeclaration {
 		for _, def := range target.defs {
 			out = append(out, occurrence{def.doc, def.sym.nameBegin, def.sym.nameEnd})
@@ -99,14 +104,14 @@ func (s *server) occurrences(target renameTarget, includeDeclaration bool) []occ
 	}
 	addRefs := func(d *document, refs []reference) {
 		for _, ref := range refs {
+			if s.cancelled() {
+				return
+			}
 			if ref.name != first.sym.name {
 				continue
 			}
-			for _, def := range s.refDefinitions(d, ref) {
-				if selected[def.sym] {
-					out = append(out, occurrence{d, ref.begin, ref.end})
-					break
-				}
+			if ref.local != nil && selected[ref.local] || ref.local == nil && globalMatches {
+				out = append(out, occurrence{d, ref.begin, ref.end})
 			}
 		}
 	}
@@ -215,22 +220,30 @@ func (s *server) rename(d *document, offset int, name string) (any, *rpcError) {
 		selected[def.sym] = true
 	}
 	var collision bool
-	for _, doc := range s.documents() {
-		walkSymbols(doc.symbols, func(sym *symbol) {
-			if selected[sym] || sym.name != name {
-				return
-			}
-			if first.globalKind != "" && sym.globalKind != "" ||
-				first.globalKind == "" && doc == d && sym.scope == first.scope && sym.globalKind == "" {
-				collision = true
-			}
-		})
+	if first.globalKind != "" && s.index != nil {
+		collision = s.index.globals.get(name) != nil
+	} else {
+		docs := []*document{d}
+		if first.globalKind != "" {
+			docs = s.documents()
+		}
+		for _, doc := range docs {
+			walkSymbols(doc.symbols, func(sym *symbol) {
+				if selected[sym] || sym.name != name {
+					return
+				}
+				if first.globalKind != "" && sym.globalKind != "" ||
+					first.globalKind == "" && doc == d && sym.scope == first.scope && sym.globalKind == "" {
+					collision = true
+				}
+			})
+		}
 	}
 	if collision {
 		return nil, &rpcError{requestFailed, "A symbol with the new name already exists in this scope"}
 	}
 	items := s.occurrences(target, true)
-	if err := s.validateRename(items, name); err != nil {
+	if err := s.validateRename(target, items, name); err != nil {
 		return nil, &rpcError{requestFailed, err.Error()}
 	}
 	edit := workspaceEdit{Changes: map[string][]textEdit{}}
@@ -255,7 +268,13 @@ func (s *server) rename(d *document, offset int, name string) (any, *rpcError) {
 
 func (s *server) renameSyntaxError() *rpcError {
 	var details []string
-	for _, doc := range s.documents() {
+	docs := []*document{}
+	if s.index != nil {
+		s.index.syntax.each(func(_ string, doc *document) { docs = append(docs, doc) })
+	} else {
+		docs = s.documents()
+	}
+	for _, doc := range docs {
 		path, err := pathFromURI(doc.uri)
 		if err != nil {
 			path = doc.uri
@@ -288,10 +307,10 @@ func (s *server) renameSyntaxError() *rpcError {
 	return &rpcError{requestFailed, message}
 }
 
-// Check the proposed edit without mutating the index. Reparse changed buffers
-// and compare every existing reference's resolved declarations, including
-// references outside the edit, to catch both collisions and name capture.
-func (s *server) validateRename(items []occurrence, name string) error {
+// Check every reference in edited buffers and references to the old/new global
+// names elsewhere. Only these bindings can change; new-name users include
+// unresolved references that the proposed declaration could capture.
+func (s *server) validateRename(target renameTarget, items []occurrence, name string) error {
 	byURI := map[string][]occurrence{}
 	for _, item := range items {
 		byURI[item.doc.uri] = append(byURI[item.doc.uri], item)
@@ -318,13 +337,15 @@ func (s *server) validateRename(items []occurrence, name string) error {
 		offset int
 	}
 	key := func(uri string, offset int) symbolKey { return symbolKey{uri, offset} }
-	candidate := &server{docs: map[string]*document{}}
-	for _, doc := range s.documents() {
+	candidate := &server{docs: maps.Clone(s.docs)}
+	updates := map[string]*document{}
+	for uri, edits := range byURI {
+		doc := s.docs[uri]
 		if s.cancelled() {
 			return fmt.Errorf("request cancelled")
 		}
 		text := doc.text
-		if edits := byURI[doc.uri]; len(edits) > 0 {
+		if len(edits) > 0 {
 			var buffer strings.Builder
 			cursor := 0
 			for _, item := range edits {
@@ -354,35 +375,128 @@ func (s *server) validateRename(items []occurrence, name string) error {
 			}
 		}
 		candidate.docs[doc.uri] = updated
+		updates[doc.uri] = updated
 	}
-	candidate.rebuildNavigation()
-	for _, doc := range s.documents() {
+	if s.index == nil {
+		candidate.rebuildNavigation()
+	} else {
+		candidate.index = s.index.fork()
+		candidate.index.docs = s.index.docs.clone()
+		candidate.index.byName = s.index.byName.clone()
+		names := map[string][]definition{}
+		for uri, updated := range updates {
+			candidate.index.docs.set(uri, updated)
+			for _, sym := range s.docs[uri].exported {
+				if _, ok := names[sym.name]; !ok {
+					names[sym.name] = nil
+				}
+			}
+			for _, sym := range updated.exported {
+				if sym.kind != 12 {
+					names[sym.name] = append(names[sym.name], definition{updated, sym})
+				}
+			}
+		}
+		for name, added := range names {
+			defs := make([]definition, 0, len(added))
+			for _, def := range s.definitions(name) {
+				if updates[def.doc.uri] == nil {
+					defs = append(defs, def)
+				}
+			}
+			defs = append(defs, added...)
+			sort.Slice(defs, func(i, j int) bool { return definitionLess(defs[i], defs[j]) })
+			if len(defs) == 0 {
+				candidate.index.byName.delete(name)
+			} else {
+				candidate.index.byName.set(name, defs)
+			}
+		}
+	}
+	checked := map[string][]reference{}
+	for uri := range updates {
+		checked[uri] = s.docs[uri].refs
+	}
+	if target.defs[0].sym.globalKind != "" {
+		for _, watched := range []string{target.defs[0].sym.name, name} {
+			if s.index != nil {
+				for uri, refs := range s.index.refs.get(watched) {
+					if updates[uri] == nil {
+						checked[uri] = append(checked[uri], refs...)
+					}
+				}
+			} else {
+				for _, doc := range s.documents() {
+					if updates[doc.uri] == nil {
+						for _, ref := range doc.refs {
+							if ref.name == watched {
+								checked[doc.uri] = append(checked[doc.uri], ref)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	// Global bindings repeat heavily (for example, Shared appears twice per
+	// declaration). Resolve and translate each name once, rather than creating
+	// a new identity set for every occurrence.
+	oldBindings, newBindings := map[string][]symbolKey{}, map[string][]symbolKey{}
+	bindings := func(owner *server, doc *document, ref reference, cache map[string][]symbolKey, before bool) []symbolKey {
+		makeKey := func(def definition) symbolKey {
+			position := def.sym.nameBegin
+			if before {
+				position = translated(def.doc.uri, position)
+			}
+			return key(def.doc.uri, position)
+		}
+		if ref.local != nil {
+			return []symbolKey{makeKey(definition{doc, ref.local})}
+		}
+		if keys, ok := cache[ref.name]; ok {
+			return keys
+		}
+		defs := owner.definitions(ref.name)
+		keys := make([]symbolKey, 0, len(defs))
+		for _, def := range defs {
+			keys = append(keys, makeKey(def))
+		}
+		cache[ref.name] = keys
+		return keys
+	}
+	for uri, refs := range checked {
+		doc := s.docs[uri]
 		if s.cancelled() {
 			return fmt.Errorf("request cancelled")
 		}
 		newRefs := map[int]reference{}
-		for _, ref := range candidate.docs[doc.uri].refs {
-			newRefs[ref.begin] = ref
+		if updates[uri] != nil {
+			for _, ref := range candidate.docs[doc.uri].refs {
+				newRefs[ref.begin] = ref
+			}
 		}
-		for _, ref := range doc.refs {
+		for _, ref := range refs {
 			if s.cancelled() {
 				return fmt.Errorf("request cancelled")
 			}
-			updated, ok := newRefs[translated(doc.uri, ref.begin)]
+			updated, ok := ref, true
+			if updates[uri] != nil {
+				updated, ok = newRefs[translated(doc.uri, ref.begin)]
+			}
 			if !ok {
 				return fmt.Errorf("The new name changes a reference's syntax")
 			}
-			oldDefs := s.refDefinitions(doc, ref)
-			newDefs := candidate.refDefinitions(candidate.docs[doc.uri], updated)
-			expected := map[symbolKey]bool{}
-			for _, def := range oldDefs {
-				expected[key(def.doc.uri, translated(def.doc.uri, def.sym.nameBegin))] = true
-			}
+			oldDefs := bindings(s, doc, ref, oldBindings, true)
+			newDefs := bindings(candidate, candidate.docs[doc.uri], updated, newBindings, false)
 			if len(oldDefs) != len(newDefs) {
 				return fmt.Errorf("The new name would change the binding of an existing reference")
 			}
 			for _, def := range newDefs {
-				if !expected[key(def.doc.uri, def.sym.nameBegin)] {
+				found := false
+				for _, previous := range oldDefs {
+					found = found || previous == def
+				}
+				if !found {
 					return fmt.Errorf("The new name would change the binding of an existing reference")
 				}
 			}

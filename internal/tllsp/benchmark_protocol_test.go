@@ -23,12 +23,16 @@ type benchmarkPeer struct {
 }
 
 func newBenchmarkPeer() *benchmarkPeer {
+	return newBenchmarkPeerServing(Run)
+}
+
+func newBenchmarkPeerServing(serve func(io.Reader, io.Writer, io.Writer) error) *benchmarkPeer {
 	inReader, input := io.Pipe()
 	outReader, output := io.Pipe()
 	p := &benchmarkPeer{input: input, output: bufio.NewReader(outReader), inReader: inReader, outReader: outReader, done: make(chan error, 1)}
 	p.timeout = time.AfterFunc(30*time.Second, p.close)
 	go func() {
-		err := Run(inReader, output, io.Discard)
+		err := serve(inReader, output, io.Discard)
 		inReader.CloseWithError(err)
 		output.CloseWithError(err)
 		p.done <- err
@@ -154,6 +158,10 @@ func BenchmarkLSPProtocol(b *testing.B) {
 								if msg.Error != nil || bytes.Equal(msg.Result, []byte("[]")) || len(msg.Result) == 0 {
 									b.Fatalf("completion failed: %+v", msg)
 								}
+								var list completionList
+								if json.Unmarshal(msg.Result, &list) != nil || !list.IsIncomplete || len(list.Items) != maxCompletionItems {
+									b.Fatalf("invalid bounded completion: %s", msg.Result)
+								}
 								completionTime += elapsed
 							} else if id == "1" {
 								heavyTime += elapsed
@@ -190,6 +198,7 @@ func BenchmarkLSPProtocol(b *testing.B) {
 						b.StartTimer()
 					}
 					b.ReportMetric(float64(completionTime.Nanoseconds())/float64(b.N), "completion-ns/op")
+					b.ReportMetric(maxCompletionItems, "completion-items/op")
 					if scenario != "CompletionAlone" {
 						b.ReportMetric(float64(heavyTime.Nanoseconds())/float64(b.N), "heavy-response-ns/op")
 					}

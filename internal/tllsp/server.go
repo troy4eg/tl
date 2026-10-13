@@ -21,29 +21,34 @@ type options struct {
 }
 
 type server struct {
-	ctx               context.Context
-	generation        uint64
-	deferChanges      bool
-	pendingChanges    map[string]*document
-	index             *workspaceIndex
-	lastDiagnostics   map[string]diagnosticState
-	dirtyDocuments    map[string]bool
-	diagnosticChanges map[string]bool
+	ctx                context.Context
+	generation         uint64
+	deferChanges       bool
+	pendingChanges     map[string]*document
+	index              *workspaceIndex
+	lastDiagnostics    map[string]diagnosticState
+	dirtyDocuments     map[string]bool
+	diagnosticChanges  map[string]bool
+	pendingDiagnostics map[string]bool
+	queueDiagnostics   func(*diagnosticJob)
 
-	out                   io.Writer
-	log                   *log.Logger
-	docs                  map[string]*document
-	byName                map[string][]definition
-	roots                 []string
-	options               options
-	initialized, shutdown bool
-	dynamicWatchers       bool
-	documentChanges       bool
-	semantic              map[string][]diagnostic
-	published             map[string]bool
-	relatedDiagnostics    bool
-	snippetSupport        bool
-	codeActionLiterals    bool
+	out                            io.Writer
+	log                            *log.Logger
+	docs                           map[string]*document
+	byName                         map[string][]definition
+	roots                          []string
+	options                        options
+	initialized, shutdown          bool
+	dynamicWatchers                bool
+	documentChanges                bool
+	semantic                       map[string][]diagnostic
+	published                      map[string]bool
+	relatedDiagnostics             bool
+	snippetSupport                 bool
+	codeActionLiterals             bool
+	completionLimit                int
+	resolveCompletionDetail        bool
+	resolveCompletionDocumentation bool
 }
 
 // Run serves one LSP connection. Only protocol messages are written to out;
@@ -90,6 +95,9 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 					Completion struct {
 						CompletionItem struct {
 							SnippetSupport bool `json:"snippetSupport"`
+							ResolveSupport *struct {
+								Properties []string `json:"properties"`
+							} `json:"resolveSupport"`
 						} `json:"completionItem"`
 					} `json:"completion"`
 					PublishDiagnostics struct {
@@ -123,6 +131,17 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 		s.documentChanges = p.Capabilities.Workspace.WorkspaceEdit.DocumentChanges
 		s.relatedDiagnostics = p.Capabilities.TextDocument.PublishDiagnostics.RelatedInformation
 		s.snippetSupport = p.Capabilities.TextDocument.Completion.CompletionItem.SnippetSupport
+		s.completionLimit = maxCompletionItems
+		if resolve := p.Capabilities.TextDocument.Completion.CompletionItem.ResolveSupport; resolve != nil {
+			for _, property := range resolve.Properties {
+				if property == "detail" {
+					s.resolveCompletionDetail = true
+				}
+				if property == "documentation" {
+					s.resolveCompletionDocumentation = true
+				}
+			}
+		}
 		s.codeActionLiterals = p.Capabilities.TextDocument.CodeAction.LiteralSupport != nil
 		var codeActionProvider any = false
 		if s.codeActionLiterals {
@@ -138,7 +157,7 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 				"definitionProvider": true, "hoverProvider": true, "documentSymbolProvider": true,
 				"referencesProvider": true, "renameProvider": map[string]any{"prepareProvider": true},
 				"workspaceSymbolProvider": true,
-				"completionProvider":      map[string]any{"triggerCharacters": []string{".", ":", "<", "[", ",", "?", "%"}},
+				"completionProvider":      map[string]any{"triggerCharacters": []string{".", ":", "<", "[", ",", "?", "%"}, "resolveProvider": true},
 				"signatureHelpProvider":   map[string]any{"triggerCharacters": []string{"<", ",", "(", " "}, "retriggerCharacters": []string{">", ")", "]"}},
 				"codeActionProvider":      codeActionProvider,
 				"semanticTokensProvider":  map[string]any{"legend": map[string]any{"tokenTypes": tokenTypes, "tokenModifiers": []string{}}, "full": true},
@@ -155,6 +174,13 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 	if method == "shutdown" {
 		s.shutdown = true
 		return nil, nil
+	}
+	if method == "completionItem/resolve" {
+		var item completionItem
+		if err := decodeParams(raw, &item); err != nil {
+			return nil, err
+		}
+		return s.resolveCompletion(item), nil
 	}
 	if method == "workspace/symbol" {
 		var p struct {
@@ -223,7 +249,7 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 		return nil, &rpcError{-32602, err.Error()}
 	}
 	if method == "textDocument/completion" {
-		return s.completion(d, offset), nil
+		return s.complete(d, offset), nil
 	}
 	if method == "textDocument/signatureHelp" {
 		return s.signatures(d, offset), nil
@@ -306,6 +332,9 @@ func (s *server) publishDiagnostics() error {
 			}
 			delete(s.published, uri)
 			delete(s.lastDiagnostics, uri)
+			continue
+		}
+		if s.pendingDiagnostics[uri] {
 			continue
 		}
 		diagnostics := s.diagnostics(d)

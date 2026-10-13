@@ -44,6 +44,10 @@ func backgroundRequest(method string) bool {
 }
 
 func runConnection(in io.Reader, out, logs io.Writer) error {
+	return runConnectionWithDiagnostics(in, out, logs, (*diagnosticJob).run)
+}
+
+func runConnectionWithDiagnostics(in io.Reader, out, logs io.Writer, runDiagnostics func(*diagnosticJob) *diagnosticResult) error {
 	s := &server{out: out, log: log.New(logs, "tl2lsp: ", 0), docs: map[string]*document{}, deferChanges: true}
 	s.options.Diagnostics.UnknownTypes = "warning"
 	stop := make(chan struct{})
@@ -51,6 +55,35 @@ func runConnection(in io.Reader, out, logs io.Writer) error {
 	jobs := make(chan *requestJob)
 	completed := make(chan requestResult, 1)
 	workerDone := make(chan struct{})
+	diagnosticJobs := make(chan *diagnosticJob)
+	diagnosticResults := make(chan *diagnosticResult, 1)
+	diagnosticDone := make(chan struct{})
+	var queuedDiagnostic, activeDiagnostic *diagnosticJob
+	s.queueDiagnostics = func(job *diagnosticJob) {
+		if activeDiagnostic != nil {
+			activeDiagnostic.cancel()
+		}
+		if queuedDiagnostic != nil {
+			queuedDiagnostic.cancel()
+		}
+		queuedDiagnostic = job
+	}
+	go func() {
+		defer close(diagnosticDone)
+		for {
+			select {
+			case <-stop:
+				return
+			case job := <-diagnosticJobs:
+				result := runDiagnostics(job)
+				select {
+				case diagnosticResults <- result:
+				case <-stop:
+					return
+				}
+			}
+		}
+	}()
 	go func() {
 		defer close(workerDone)
 		for {
@@ -93,6 +126,7 @@ func runConnection(in io.Reader, out, logs io.Writer) error {
 	pending := map[string]*requestJob{}
 	queue := []*requestJob{}
 	defer func() {
+		s.queueDiagnostics(nil)
 		for _, job := range pending {
 			job.cancel()
 		}
@@ -101,6 +135,7 @@ func runConnection(in io.Reader, out, logs io.Writer) error {
 			closer.Close()
 		}
 		<-workerDone
+		<-diagnosticDone
 	}()
 	var deadline *time.Timer
 	var tick <-chan time.Time
@@ -130,7 +165,27 @@ func runConnection(in io.Reader, out, logs io.Writer) error {
 			dispatch = jobs
 			next = queue[0]
 		}
+		var diagnosticDispatch chan *diagnosticJob
+		if activeDiagnostic == nil && queuedDiagnostic != nil {
+			diagnosticDispatch = diagnosticJobs
+		}
 		select {
+		case diagnosticDispatch <- queuedDiagnostic:
+			activeDiagnostic = queuedDiagnostic
+			queuedDiagnostic = nil
+		case result := <-diagnosticResults:
+			completedDiagnostic := activeDiagnostic
+			activeDiagnostic = nil
+			if result != nil {
+				// Inspect the result before cancelling its completed context.
+				// Cancellation is used to discard superseded jobs.
+				if s.applyDiagnostics(result) {
+					if err := s.publishDiagnostics(); err != nil {
+						return err
+					}
+				}
+			}
+			completedDiagnostic.cancel()
 		case dispatch <- next:
 			queue = queue[1:]
 			active = true
@@ -164,6 +219,9 @@ func runConnection(in io.Reader, out, logs io.Writer) error {
 		case event := <-incoming:
 			if event.err != nil {
 				if err := flush(); err != nil {
+					return err
+				}
+				if err := s.finishDiagnostics(); err != nil {
 					return err
 				}
 				if !errors.Is(event.err, io.EOF) {
@@ -209,6 +267,9 @@ func runConnection(in io.Reader, out, logs io.Writer) error {
 				}
 			}
 			if msg.Method == "exit" && len(msg.ID) == 0 {
+				if err := s.finishDiagnostics(); err != nil {
+					return err
+				}
 				if !s.shutdown {
 					finishErr = fmt.Errorf("exit before shutdown")
 				}
@@ -217,6 +278,11 @@ func runConnection(in io.Reader, out, logs io.Writer) error {
 				continue
 			}
 			if len(msg.ID) > 0 {
+				if msg.Method == "shutdown" {
+					if err := s.finishDiagnostics(); err != nil {
+						return err
+					}
+				}
 				if s.initialized && !s.shutdown && backgroundRequest(msg.Method) {
 					if _, exists := pending[requestIDKey(msg.ID)]; exists {
 						if err := s.respond(msg.ID, nil, &rpcError{-32600, "duplicate pending request ID"}); err != nil {
@@ -249,6 +315,7 @@ func runConnection(in io.Reader, out, logs io.Writer) error {
 					return err
 				}
 				if len(s.pendingChanges) > 0 {
+					s.queueDiagnostics(nil)
 					now := time.Now()
 					if firstChange.IsZero() {
 						firstChange = now

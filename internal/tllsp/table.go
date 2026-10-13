@@ -43,11 +43,14 @@ func (t indexTable[V]) each(visit func(string, V)) {
 }
 
 func (t indexTable[V]) prefix(prefix string, visit func(string, V)) {
+	t.prefixWhile(prefix, func(key string, value V) bool { visit(key, value); return true })
+}
+
+func (t indexTable[V]) prefixWhile(prefix string, visit func(string, V) bool) {
 	t.tree.AscendGreaterOrEqual(tableItem[V]{key: prefix}, func(item tableItem[V]) bool {
 		if !strings.HasPrefix(item.key, prefix) {
 			return false
 		}
-		visit(item.key, item.value)
-		return true
+		return visit(item.key, item.value)
 	})
 }

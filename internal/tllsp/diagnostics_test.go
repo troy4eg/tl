@@ -38,15 +38,12 @@ func TestSemanticDiagnosticsAcrossUnsavedAndClosedDocuments(t *testing.T) {
 	writeFile(t, filepath.Join(root, "типы с пробелом.tl2"), "Box<T:Type> = x:T;")
 	use := "// 😀\r\nUse = value:Box<7>;"
 	writeFile(t, filepath.Join(root, "use.tl2"), use)
-	results := runSession(t,
-		rpc("initialize", 0, map[string]any{"rootUri": uriFromPath(root), "capabilities": map[string]any{"textDocument": map[string]any{"publishDiagnostics": map[string]any{"relatedInformation": true}}}}),
-		rpc("initialized", nil, map[string]any{}),
-		// Changing an unsaved dependency must update a closed consumer.
-		openDoc(defURI, "Box<N:#> = values:[N]int32;", 3),
-		rpc("textDocument/didClose", nil, docParams(defURI, position{})),
-		openDoc(useURI, strings.Replace(use, "<7>", "<int32>", 1), 4),
-		rpc("textDocument/didClose", nil, docParams(useURI, position{})),
-		rpc("shutdown", 1, nil), rpc("exit", nil, nil),
+	results := runDiagnosticSession(t, useURI,
+		[]map[string]any{rpc("initialize", 0, map[string]any{"rootUri": uriFromPath(root), "capabilities": map[string]any{"textDocument": map[string]any{"publishDiagnostics": map[string]any{"relatedInformation": true}}}}), rpc("initialized", nil, map[string]any{})},
+		[]map[string]any{openDoc(defURI, "Box<N:#> = values:[N]int32;", 3)},
+		[]map[string]any{rpc("textDocument/didClose", nil, docParams(defURI, position{}))},
+		[]map[string]any{openDoc(useURI, strings.Replace(use, "<7>", "<int32>", 1), 4)},
+		[]map[string]any{rpc("textDocument/didClose", nil, docParams(useURI, position{}))},
 	)
 	items := publications(t, results, useURI)
 	if len(items) != 5 {

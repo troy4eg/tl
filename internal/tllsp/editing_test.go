@@ -93,18 +93,11 @@ func TestIncrementalTypingPromotesDeclarations(t *testing.T) {
 	change := func(version int, r span, text string) map[string]any {
 		return rpc("textDocument/didChange", nil, map[string]any{"textDocument": map[string]any{"uri": uri, "version": version}, "contentChanges": []any{map[string]any{"range": r, "text": text}}})
 	}
-	results := runSession(t,
-		rpc("initialize", 0, map[string]any{}),
-		openDoc(consumerURI, "Use = x:Draft<7>;", 1), openDoc(uri, text, 1),
-		rpc("textDocument/definition", 1, docParams(uri, newSource(text).position(strings.Index(text, "value:T")+6))),
-		rpc("textDocument/hover", 2, docParams(uri, newSource(text).position(strings.Index(text, "value:T")+6))),
-		change(2, span{at, at}, ";"),
-		rpc("textDocument/documentSymbol", 3, docParams(uri, position{})),
-		// Remove the complete field and its semicolon: old symbols must disappear.
-		change(3, span{newSource(text).position(strings.Index(text, "value:T")), position{at.Line, at.Character + 1}}, ""),
-		rpc("textDocument/documentSymbol", 4, docParams(uri, position{})),
-		rpc("textDocument/completion", 5, docParams(uri, newSource(text).position(strings.Index(text, "value:T")))),
-		rpc("shutdown", 6, nil), rpc("exit", nil, nil),
+	results := runDiagnosticSession(t, consumerURI,
+		[]map[string]any{rpc("initialize", 0, map[string]any{}), openDoc(consumerURI, "Use = x:Draft<7>;", 1)},
+		[]map[string]any{openDoc(uri, text, 1), rpc("textDocument/definition", 1, docParams(uri, newSource(text).position(strings.Index(text, "value:T")+6))), rpc("textDocument/hover", 2, docParams(uri, newSource(text).position(strings.Index(text, "value:T")+6)))},
+		[]map[string]any{change(2, span{at, at}, ";"), rpc("textDocument/documentSymbol", 3, docParams(uri, position{}))},
+		[]map[string]any{change(3, span{newSource(text).position(strings.Index(text, "value:T")), position{at.Line, at.Character + 1}}, ""), rpc("textDocument/documentSymbol", 4, docParams(uri, position{})), rpc("textDocument/completion", 5, docParams(uri, newSource(text).position(strings.Index(text, "value:T"))))},
 	)
 	var defs []location
 	response(t, results, 1, &defs)
