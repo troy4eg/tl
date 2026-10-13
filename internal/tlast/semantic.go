@@ -44,9 +44,10 @@ type semanticType struct {
 }
 
 type semanticLocal struct {
-	pr                   PositionRange
+	pr                   *PositionRange
 	nat, field, optional bool
-	typ                  TL2TypeRef
+	typ                  *TL2TypeRef
+	legacy               *TypeRef
 	ready, tl1           bool
 }
 
@@ -88,31 +89,62 @@ func tl1Params(args []TemplateArgument) []TL2TypeTemplate {
 	return result
 }
 
+// SchemaDeclarations is a parsed document. Keeping documents separate avoids
+// copying their large AST values into one concatenated schema on every edit.
+type SchemaDeclarations struct {
+	TL  TL
+	TL2 []TL2Combinator
+}
+
+// SchemaValidator holds immutable global signatures. Validate can check a single
+// document against the whole schema, and can run concurrently on the same index.
+type SchemaValidator struct {
+	types  map[string]*semanticType
+	errors []SemanticError
+}
+
+func (v *SchemaValidator) GlobalErrors() []SemanticError { return v.errors }
+
 // ValidateSchema checks recovered declarations from all files together. It does
 // not read disk, mutate the AST, instantiate types, or write to stdout/stderr.
 // Generator-specific migration, naming and backend policies are intentionally
 // outside this pass; unresolved dependencies do not prevent other checks.
 func ValidateSchema(tl TL, tl2 []TL2Combinator) []SemanticError {
+	file := SchemaDeclarations{tl, tl2}
+	validator := NewSchemaValidator([]SchemaDeclarations{file})
+	return append(validator.GlobalErrors(), validator.Validate(file)...)
+}
+
+func NewSchemaValidator(files []SchemaDeclarations) *SchemaValidator {
 	c := &semanticChecker{types: map[string]*semanticType{}}
-	for _, a := range tl {
-		params := tl1Params(a.TemplateArguments)
-		// Built-in wrappers deliberately reuse primitive constructor names.
-		if !a.Builtin {
-			c.add(&semanticType{name: a.Construct.Name.String(), pr: a.Construct.NamePR, params: params, function: a.IsFunction})
-		}
-		if !a.IsFunction {
-			c.add(&semanticType{name: a.TypeDecl.Name.String(), pr: a.TypeDecl.NamePR, params: params, sharedTL1: true})
+	for _, file := range files {
+		for _, a := range file.TL {
+			params := tl1Params(a.TemplateArguments)
+			// Built-in wrappers deliberately reuse primitive constructor names.
+			if !a.Builtin {
+				c.add(&semanticType{name: a.Construct.Name.String(), pr: a.Construct.NamePR, params: params, function: a.IsFunction})
+			}
+			if !a.IsFunction {
+				c.add(&semanticType{name: a.TypeDecl.Name.String(), pr: a.TypeDecl.NamePR, params: params, sharedTL1: true})
+			}
 		}
 	}
-	for _, a := range tl2 {
-		t := &semanticType{name: a.ReferenceName().String(), pr: a.ReferenceNamePR(), params: a.TypeDecl.TemplateArguments, function: a.IsFunction}
-		if !a.IsFunction && a.TypeDecl.Type.IsAlias() {
-			t.alias = &a.TypeDecl.Type.TypeAlias
+	for _, file := range files {
+		for _, a := range file.TL2 {
+			t := &semanticType{name: a.ReferenceName().String(), pr: a.ReferenceNamePR(), params: a.TypeDecl.TemplateArguments, function: a.IsFunction}
+			if !a.IsFunction && a.TypeDecl.Type.IsAlias() {
+				t.alias = &a.TypeDecl.Type.TypeAlias
+			}
+			c.add(t)
 		}
-		c.add(t)
 	}
-	c.errors = append(c.errors, CheckConstructorTags(tl, tl2)...)
-	for _, a := range tl {
+	c.errors = append(c.errors, checkSchemaTags(files)...)
+	return &SchemaValidator{types: c.types, errors: c.errors}
+}
+
+func (v *SchemaValidator) Validate(file SchemaDeclarations) []SemanticError {
+	c := &semanticChecker{types: v.types}
+	for _, a := range file.TL {
 		c.tl1 = true
 		locals := c.templates(tl1Params(a.TemplateArguments))
 		if !a.IsFunction && !a.Builtin {
@@ -134,7 +166,7 @@ func ValidateSchema(tl TL, tl2 []TL2Combinator) []SemanticError {
 			c.requireType(TL1TypeRef(a.FuncDecl), locals)
 		}
 	}
-	for _, a := range tl2 {
+	for _, a := range file.TL2 {
 		c.tl1 = false
 		locals := c.templates(a.TypeDecl.TemplateArguments)
 		if a.IsFunction {
@@ -151,6 +183,10 @@ func ValidateSchema(tl TL, tl2 []TL2Combinator) []SemanticError {
 // CheckConstructorTags uses the same TL1 CRC calculation as generation and a
 // single tag space for TL1 constructors/functions and explicit TL2 tags.
 func CheckConstructorTags(tl TL, tl2 []TL2Combinator) []SemanticError {
+	return checkSchemaTags([]SchemaDeclarations{{tl, tl2}})
+}
+
+func checkSchemaTags(files []SchemaDeclarations) []SemanticError {
 	var errors []SemanticError
 	seen := map[uint32]PositionRange{}
 	add := func(tag uint32, name string, pr PositionRange, required bool) {
@@ -166,14 +202,18 @@ func CheckConstructorTags(tl TL, tl2 []TL2Combinator) []SemanticError {
 			seen[tag] = pr
 		}
 	}
-	for _, a := range tl {
-		add(a.Crc32(), a.Construct.Name.String(), a.Construct.IDPR, true)
+	for _, file := range files {
+		for _, a := range file.TL {
+			add(a.Crc32(), a.Construct.Name.String(), a.Construct.IDPR, true)
+		}
 	}
-	for _, a := range tl2 {
-		if a.IsFunction {
-			add(a.FuncDecl.Magic, a.FuncDecl.Name.String(), a.FuncDecl.PRID, false)
-		} else {
-			add(a.TypeDecl.Magic, a.TypeDecl.Name.String(), a.TypeDecl.PRID, false)
+	for _, file := range files {
+		for _, a := range file.TL2 {
+			if a.IsFunction {
+				add(a.FuncDecl.Magic, a.FuncDecl.Name.String(), a.FuncDecl.PRID, false)
+			} else {
+				add(a.TypeDecl.Magic, a.TypeDecl.Name.String(), a.TypeDecl.PRID, false)
+			}
 		}
 	}
 	return errors
@@ -181,11 +221,12 @@ func CheckConstructorTags(tl TL, tl2 []TL2Combinator) []SemanticError {
 
 func (c *semanticChecker) templates(params []TL2TypeTemplate) map[string]semanticLocal {
 	locals := map[string]semanticLocal{}
-	for _, p := range params {
+	for i := range params {
+		p := &params[i]
 		if old, ok := locals[p.Name]; ok {
-			c.report("duplicate-local", p.PRName, &old.pr, "Duplicate template parameter '%s'", p.Name)
+			c.report("duplicate-local", p.PRName, old.pr, "Duplicate template parameter '%s'", p.Name)
 		}
-		locals[p.Name] = semanticLocal{pr: p.PRName, nat: p.Category.IsNat()}
+		locals[p.Name] = semanticLocal{pr: &p.PRName, nat: p.Category.IsNat()}
 	}
 	return locals
 }
@@ -221,26 +262,27 @@ func (c *semanticChecker) definition(def TL2TypeDefinition, locals map[string]se
 	}
 }
 
-func (c *semanticChecker) addField(name string, pr PositionRange, typ TL2TypeRef, optional bool, locals map[string]semanticLocal, seen map[string]PositionRange) {
+func (c *semanticChecker) addField(name string, pr *PositionRange, typ *TL2TypeRef, legacy *TypeRef, optional bool, locals map[string]semanticLocal, seen map[string]PositionRange) {
 	if name == "" || name == "_" {
 		return
 	}
 	if old, ok := seen[name]; ok {
-		c.report("duplicate-local", pr, &old, "Duplicate field '%s'", name)
+		c.report("duplicate-local", *pr, &old, "Duplicate field '%s'", name)
 	}
-	seen[name] = pr
+	seen[name] = *pr
 	// Fields may shadow enclosing fields in nested TL1 repeated groups, but
 	// must not shadow template parameters in their declaration.
 	if old, ok := locals[name]; ok && !old.field {
-		c.report("duplicate-local", pr, &old.pr, "Field '%s' conflicts with a template parameter", name)
+		c.report("duplicate-local", *pr, old.pr, "Field '%s' conflicts with a template parameter", name)
 	}
-	locals[name] = semanticLocal{pr: pr, field: true, typ: typ, optional: optional, tl1: c.tl1}
+	locals[name] = semanticLocal{pr: pr, field: true, typ: typ, legacy: legacy, optional: optional, tl1: c.tl1}
 }
 
 func (c *semanticChecker) fieldsTL2(fields []TL2Field, locals map[string]semanticLocal) {
 	seen := map[string]PositionRange{}
-	for _, f := range fields {
-		c.addField(f.Name, f.PRName, f.Type, f.IsOptional, locals, seen)
+	for i := range fields {
+		f := &fields[i]
+		c.addField(f.Name, &f.PRName, &f.Type, nil, f.IsOptional, locals, seen)
 	}
 	for _, f := range fields {
 		c.requireType(f.Type, locals)
@@ -254,8 +296,9 @@ func (c *semanticChecker) fieldsTL2(fields []TL2Field, locals map[string]semanti
 
 func (c *semanticChecker) fieldsTL1(fields []Field, locals map[string]semanticLocal) {
 	seen := map[string]PositionRange{}
-	for _, f := range fields {
-		c.addField(f.FieldName, f.PRName, TL1TypeRef(f.FieldType), f.Mask != nil || f.IsRepeated, locals, seen)
+	for i := range fields {
+		f := &fields[i]
+		c.addField(f.FieldName, &f.PRName, nil, &f.FieldType, f.Mask != nil || f.IsRepeated, locals, seen)
 	}
 	for i, f := range fields {
 		if f.Mask != nil {
@@ -306,7 +349,7 @@ func (c *semanticChecker) requireNat(name string, pr PositionRange, locals map[s
 	}
 	_, valid := c.localCategory(name, local, pr)
 	if valid && !local.nat && !local.field {
-		c.report("argument-category", pr, &local.pr, "Reference '%s' must have category #", name)
+		c.report("argument-category", pr, local.pr, "Reference '%s' must have category #", name)
 	}
 }
 
@@ -315,15 +358,21 @@ func (c *semanticChecker) localCategory(name string, local semanticLocal, pr Pos
 		return local.nat, true
 	}
 	if !local.ready {
-		c.report("field-dependency", pr, &local.pr, "Reference '%s' must name a preceding field", name)
+		c.report("field-dependency", pr, local.pr, "Reference '%s' must name a preceding field", name)
 		return false, false
 	}
-	primitive, known := c.primitive(local.typ, nil, map[string]bool{})
+	var typ TL2TypeRef
+	if local.legacy != nil {
+		typ = TL1TypeRef(*local.legacy)
+	} else if local.typ != nil {
+		typ = *local.typ
+	}
+	primitive, known := c.primitive(typ, nil, map[string]bool{})
 	if !known {
 		return false, false
 	}
 	if local.optional || (primitive != "#" && (primitive != "uint32" || local.tl1)) {
-		c.report("field-dependency", pr, &local.pr, "Reference '%s' must name a required # or uint32 field", name)
+		c.report("field-dependency", pr, local.pr, "Reference '%s' must name a required # or uint32 field", name)
 		return false, false
 	}
 	return true, true
@@ -364,7 +413,7 @@ func (c *semanticChecker) typeCategory(tr TL2TypeRef, locals map[string]semantic
 	}
 	if localFound {
 		if len(app.Arguments) > 0 {
-			c.report("template-arity", tr.PR, &local.pr, "Local reference '%s' cannot have template arguments", name)
+			c.report("template-arity", tr.PR, local.pr, "Local reference '%s' cannot have template arguments", name)
 		}
 		return c.localCategory(name, local, app.PRName)
 	}
@@ -386,7 +435,8 @@ func (c *semanticChecker) typeCategory(tr TL2TypeRef, locals map[string]semantic
 		c.report("function-reference", app.PRName, &t.pr, "Cannot reference function '%s' as a type", name)
 		return false, false
 	}
-	if err := TemplateArityError(app.String(), len(t.params), len(app.Arguments)); err != nil {
+	if len(t.params) != len(app.Arguments) {
+		err := TemplateArityError(app.String(), len(t.params), len(app.Arguments))
 		c.report("template-arity", tr.PR, &t.pr, "%s", err)
 	} else {
 		for i, p := range t.params {

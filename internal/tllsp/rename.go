@@ -40,6 +40,9 @@ func (s *server) targetAt(d *document, offset int) renameTarget {
 		return renameTarget{span: r}
 	}
 	first := defs[0].sym
+	if first.globalKind != "" && s.index != nil {
+		return renameTarget{s.index.globals[first.name], r}
+	}
 	if first.globalKind != "" {
 		defs = nil
 		for _, doc := range s.documents() {
@@ -82,21 +85,39 @@ func (s *server) occurrences(target renameTarget, includeDeclaration bool) []occ
 		selected[def.sym] = true
 	}
 	out := []occurrence{}
-	for _, d := range s.documents() {
-		if includeDeclaration {
-			walkSymbols(d.symbols, func(sym *symbol) {
-				if selected[sym] {
-					out = append(out, occurrence{d, sym.nameBegin, sym.nameEnd})
-				}
-			})
+	if len(target.defs) == 0 {
+		return out
+	}
+	first := target.defs[0]
+	if includeDeclaration {
+		for _, def := range target.defs {
+			out = append(out, occurrence{def.doc, def.sym.nameBegin, def.sym.nameEnd})
 		}
-		for _, ref := range d.refs {
+	}
+	addRefs := func(d *document, refs []reference) {
+		for _, ref := range refs {
+			if ref.name != first.sym.name {
+				continue
+			}
 			for _, def := range s.refDefinitions(d, ref) {
 				if selected[def.sym] {
 					out = append(out, occurrence{d, ref.begin, ref.end})
 					break
 				}
 			}
+		}
+	}
+	if s.index != nil {
+		for uri, refs := range s.index.refs[first.sym.name] {
+			if first.sym.globalKind != "" || uri == first.doc.uri {
+				addRefs(s.docs[uri], refs)
+			}
+		}
+	} else if first.sym.globalKind == "" {
+		addRefs(first.doc, first.doc.refs)
+	} else {
+		for _, d := range s.documents() {
+			addRefs(d, d.refs)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -162,6 +183,9 @@ func validRenameName(name string, qualified bool) bool {
 func asciiLetter(b byte) bool { return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' }
 
 func (s *server) rename(d *document, offset int, name string) (any, *rpcError) {
+	if s.cancelled() {
+		return nil, &rpcError{requestCancelled, "Request cancelled"}
+	}
 	target := s.targetAt(d, offset)
 	if err := target.check(); err != nil {
 		return nil, err
@@ -286,13 +310,27 @@ func (s *server) validateRename(items []occurrence, name string) error {
 		}
 		return offset
 	}
-	key := func(uri string, offset int) string { return fmt.Sprintf("%s:%d", uri, offset) }
+	type symbolKey struct {
+		uri    string
+		offset int
+	}
+	key := func(uri string, offset int) symbolKey { return symbolKey{uri, offset} }
 	candidate := &server{docs: map[string]*document{}}
 	for _, doc := range s.documents() {
+		if s.cancelled() {
+			return fmt.Errorf("request cancelled")
+		}
 		text := doc.text
-		for i := len(byURI[doc.uri]) - 1; i >= 0; i-- {
-			item := byURI[doc.uri][i]
-			text = text[:item.begin] + name + text[item.end:]
+		if edits := byURI[doc.uri]; len(edits) > 0 {
+			var buffer strings.Builder
+			cursor := 0
+			for _, item := range edits {
+				buffer.WriteString(doc.text[cursor:item.begin])
+				buffer.WriteString(name)
+				cursor = item.end
+			}
+			buffer.WriteString(doc.text[cursor:])
+			text = buffer.String()
 		}
 		updated := doc
 		if text != doc.text {
@@ -300,7 +338,7 @@ func (s *server) validateRename(items []occurrence, name string) error {
 			if len(updated.errors) > len(doc.errors) || len(updated.refs) != len(doc.refs) {
 				return fmt.Errorf("The new name is not valid in this declaration or reference")
 			}
-			oldSymbols, newSymbols := map[string]*symbol{}, map[string]*symbol{}
+			oldSymbols, newSymbols := map[symbolKey]*symbol{}, map[symbolKey]*symbol{}
 			walkSymbols(doc.symbols, func(sym *symbol) { oldSymbols[key(doc.uri, translated(doc.uri, sym.nameBegin))] = sym })
 			walkSymbols(updated.symbols, func(sym *symbol) { newSymbols[key(doc.uri, sym.nameBegin)] = sym })
 			if len(oldSymbols) != len(newSymbols) {
@@ -314,20 +352,26 @@ func (s *server) validateRename(items []occurrence, name string) error {
 		}
 		candidate.docs[doc.uri] = updated
 	}
-	candidate.rebuildDefinitions()
+	candidate.rebuildNavigation()
 	for _, doc := range s.documents() {
+		if s.cancelled() {
+			return fmt.Errorf("request cancelled")
+		}
 		newRefs := map[int]reference{}
 		for _, ref := range candidate.docs[doc.uri].refs {
 			newRefs[ref.begin] = ref
 		}
 		for _, ref := range doc.refs {
+			if s.cancelled() {
+				return fmt.Errorf("request cancelled")
+			}
 			updated, ok := newRefs[translated(doc.uri, ref.begin)]
 			if !ok {
 				return fmt.Errorf("The new name changes a reference's syntax")
 			}
 			oldDefs := s.refDefinitions(doc, ref)
 			newDefs := candidate.refDefinitions(candidate.docs[doc.uri], updated)
-			expected := map[string]bool{}
+			expected := map[symbolKey]bool{}
 			for _, def := range oldDefs {
 				expected[key(def.doc.uri, translated(def.doc.uri, def.sym.nameBegin))] = true
 			}

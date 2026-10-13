@@ -23,6 +23,25 @@ make test-lsp
 go install ./cmd/tl2lsp
 ```
 
+For repeatable performance measurements, run `make bench-lsp`.
+
+The server reuses unchanged parsed files and checks changed documents plus their
+semantic dependents. Save/close/watcher events update the indicated file; startup
+and schema/workspace configuration changes scan the configured paths. Global
+signature and CRC checks are retained, including diagnostics for closed files.
+Unchanged diagnostics are skipped, while diagnostics for open buffers retain
+their document version.
+
+Consecutive typing changes are combined with a 25 ms debounce and a 100 ms
+maximum scheduling delay. A request flushes pending changes before using the
+index. References, rename, code actions, workspace symbols and document
+symbols/tokens run on immutable snapshots in a bounded background queue, leaving
+completion, hover and navigation responsive. `$/cancelRequest` cancels queued or
+running background requests; rename checks cancellation between documents and
+reference checks. A rename prepared for an older workspace is rejected with a
+retry message. Other read-only responses can describe the snapshot at request
+arrival, as permitted by the [LSP base protocol](https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.17/specification.md#cancellationSupport).
+
 The build produces `target/bin/tl2lsp` (`tl2lsp.exe` on Windows when using
 `go build -o target/bin/tl2lsp.exe ./cmd/tl2lsp`). Put the installed executable
 on the editor's PATH or configure its absolute path in the editor client.

@@ -80,7 +80,7 @@ func editorDeclarationStart(tokens []token, i int, tl2 bool) bool {
 	return it.checkToken(colon)
 }
 
-func editorChunks(tokens []token, tl2 bool) [][]token {
+func editorChunks(tokens []token) [][]token {
 	var result [][]token
 	start := 0
 	for i, tok := range tokens {
@@ -95,41 +95,9 @@ func editorChunks(tokens []token, tl2 bool) [][]token {
 			pos.column += len(tok.val)
 			chunk = append(chunk, token{tokenType: eof, pos: pos})
 		}
-		if editorChunkParses(chunk, tl2) {
-			result = append(result, chunk)
-		} else {
-			result = append(result, editorResyncChunks(chunk, tl2)...)
-		}
+		result = append(result, chunk)
 	}
 	return result
-}
-
-func editorChunkParses(tokens []token, tl2 bool) bool {
-	opts := LexerOptions{AllowDirty: true, AllowBuiltin: true}
-	if tl2 {
-		opts = LexerOptions{LexerLanguage: TL2}
-	}
-	if bad, _ := editorChunkError(tokens, opts); bad {
-		return false
-	}
-	it := tokenIterator{tokens: tokens}
-	if tl2 {
-		_, _, err := parseTL2Combinator(it)
-		return err == nil
-	}
-	for it.checkToken(typesSection) || it.checkToken(functionsSection) {
-		it.popFront()
-	}
-	if it.checkToken(eof) {
-		return true
-	}
-	editorTL1ConstructorToken(tokens, it)
-	_, _, err := parseCombinator(it, it, false, true)
-	if err == nil {
-		return true
-	}
-	_, _, err = parseCombinator(it, it, true, true)
-	return err == nil
 }
 
 func editorResyncChunks(tokens []token, tl2 bool) [][]token {
@@ -209,7 +177,9 @@ func ParseTL2FileEditing(text, file string) EditorParse[TL2Combinator] {
 	opts := LexerOptions{LexerLanguage: TL2}
 	lex, errs := editorLex(text, file, opts)
 	result := EditorParse[TL2Combinator]{Errors: errs}
-	for _, tokens := range editorChunks(lex.tokens, true) {
+	chunks := editorChunks(lex.tokens)
+	for index := 0; index < len(chunks); index++ {
+		tokens := chunks[index]
 		it := tokenIterator{tokens: tokens}
 		if it.expectLazy(eof) {
 			continue
@@ -219,10 +189,17 @@ func ParseTL2FileEditing(text, file string) EditorParse[TL2Combinator] {
 		if !bad {
 			comb, _, pe = parseTL2Combinator(it)
 		}
+		incomplete := bad || pe != nil
+		if incomplete {
+			if recovered := editorRecoveryChunks(tokens, true); len(recovered) > 1 {
+				chunks = replaceEditorChunk(chunks, index, recovered)
+				index--
+				continue
+			}
+		}
 		if pe != nil {
 			result.Errors = append(result.Errors, pe)
 		}
-		incomplete := bad || pe != nil
 		if incomplete {
 			comb = editorTL2Combinator(it)
 		}
@@ -406,7 +383,9 @@ func ParseTLFileEditing(text, file string) EditorParse[*Combinator] {
 	lex, errs := editorLex(text, file, opts)
 	result := EditorParse[*Combinator]{Errors: errs}
 	functionSection := false
-	for _, tokens := range editorChunks(lex.tokens, false) {
+	chunks := editorChunks(lex.tokens)
+	for index := 0; index < len(chunks); index++ {
+		tokens := chunks[index]
 		it := tokenIterator{tokens: tokens}
 		commentStart := it
 		for it.checkToken(typesSection) || it.checkToken(functionsSection) {
@@ -426,10 +405,17 @@ func ParseTLFileEditing(text, file string) EditorParse[*Combinator] {
 				errors.As(err, &pe)
 			}
 		}
+		incomplete := bad || err != nil
+		if incomplete {
+			if recovered := editorRecoveryChunks(tokens, false); len(recovered) > 1 {
+				chunks = replaceEditorChunk(chunks, index, recovered)
+				index--
+				continue
+			}
+		}
 		if pe != nil {
 			result.Errors = append(result.Errors, pe)
 		}
-		incomplete := bad || err != nil
 		if incomplete {
 			c = editorTL1Combinator(commentStart, it, functionSection)
 		}
@@ -634,4 +620,27 @@ func editorTL1Type(it *tokenIterator, outer Position, apply bool, depth int) Typ
 	}
 	result.PR.End = it.front().pos
 	return result
+}
+
+// Retry only failed chunks. Valid declarations are parsed once; speculative
+// parsing previously built and discarded a second AST for every declaration.
+func replaceEditorChunk(chunks [][]token, index int, recovered [][]token) [][]token {
+	out := make([][]token, 0, len(chunks)+len(recovered)-1)
+	out = append(out, chunks[:index]...)
+	out = append(out, recovered...)
+	return append(out, chunks[index+1:]...)
+}
+
+func editorRecoveryChunks(tokens []token, tl2 bool) [][]token {
+	chunks := editorResyncChunks(tokens, tl2)
+	out := chunks[:0]
+	for _, chunk := range chunks {
+		for _, tok := range chunk {
+			if tok.tokenType != eof && !editorTrivia(tok) {
+				out = append(out, chunk)
+				break
+			}
+		}
+	}
+	return out
 }

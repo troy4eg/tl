@@ -1,12 +1,12 @@
 package tllsp
 
 import (
-	"bufio"
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +20,13 @@ type options struct {
 }
 
 type server struct {
+	ctx             context.Context
+	generation      uint64
+	deferChanges    bool
+	pendingChanges  map[string]*document
+	index           *workspaceIndex
+	lastDiagnostics map[string]diagnosticState
+
 	out                   io.Writer
 	log                   *log.Logger
 	docs                  map[string]*document
@@ -39,53 +46,7 @@ type server struct {
 // Run serves one LSP connection. Only protocol messages are written to out;
 // diagnostics about the server itself go to logs (normally stderr).
 func Run(in io.Reader, out, logs io.Writer) error {
-	s := &server{out: out, log: log.New(logs, "tl2lsp: ", 0), docs: map[string]*document{}}
-	s.options.Diagnostics.UnknownTypes = "warning"
-	r := bufio.NewReader(in)
-	for {
-		body, err := readMessage(r)
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		var msg message
-		if err := json.Unmarshal(body, &msg); err != nil {
-			if err := s.respond(json.RawMessage("null"), nil, &rpcError{-32700, "invalid JSON"}); err != nil {
-				return err
-			}
-			continue
-		}
-		// Responses to server-initiated registration requests must not receive
-		// another response (which would cause a JSON-RPC error loop).
-		if msg.JSONRPC == "2.0" && msg.Method == "" && len(msg.ID) > 0 && (len(msg.Result) > 0 || msg.Error != nil) {
-			if msg.Error != nil {
-				s.log.Printf("client request %s: %s", msg.ID, msg.Error.Message)
-			}
-			continue
-		}
-		if msg.JSONRPC != "2.0" || msg.Method == "" {
-			if err := s.respond(json.RawMessage("null"), nil, &rpcError{-32600, "invalid request"}); err != nil {
-				return err
-			}
-			continue
-		}
-		if msg.Method == "exit" && len(msg.ID) == 0 {
-			if !s.shutdown {
-				return fmt.Errorf("exit before shutdown")
-			}
-			return nil
-		}
-		if len(msg.ID) != 0 {
-			result, rpcErr := s.request(msg.Method, msg.Params)
-			if err := s.respond(msg.ID, result, rpcErr); err != nil {
-				return err
-			}
-		} else if err := s.notification(msg.Method, msg.Params); err != nil {
-			return err
-		}
-	}
+	return runConnection(in, out, logs)
 }
 
 func (s *server) respond(id json.RawMessage, result any, rpcErr *rpcError) error {
@@ -299,7 +260,18 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 	return map[string]any{"contents": markup{"plaintext", value}, "range": refRange}, nil
 }
 
+type diagnosticState struct {
+	version     int
+	open        bool
+	diagnostics []diagnostic
+}
+
 func (s *server) publishDiagnostics() error {
+	s.lastDiagnostics = maps.Clone(s.lastDiagnostics)
+	if s.lastDiagnostics == nil {
+		s.lastDiagnostics = map[string]diagnosticState{}
+	}
+
 	if s.published == nil {
 		s.published = map[string]bool{}
 	}
@@ -310,10 +282,16 @@ func (s *server) publishDiagnostics() error {
 				return err
 			}
 			delete(s.published, uri)
+			delete(s.lastDiagnostics, uri)
 		}
 	}
 	for _, d := range s.documents() {
-		params := map[string]any{"uri": d.uri, "diagnostics": s.diagnostics(d)}
+		diagnostics := s.diagnostics(d)
+		state := diagnosticState{d.version, d.open, diagnostics}
+		if previous, ok := s.lastDiagnostics[d.uri]; ok && previous.version == state.version && previous.open == state.open && equalDiagnostics(previous.diagnostics, state.diagnostics) {
+			continue
+		}
+		params := map[string]any{"uri": d.uri, "diagnostics": diagnostics}
 		if d.open {
 			params["version"] = d.version
 		}
@@ -324,6 +302,7 @@ func (s *server) publishDiagnostics() error {
 			return err
 		}
 		s.published[d.uri] = true
+		s.lastDiagnostics[d.uri] = state
 	}
 	return nil
 }
@@ -366,38 +345,8 @@ func (s *server) notification(method string, raw json.RawMessage) error {
 			s.docs[uri] = parseDocumentLanguage(uri, p.TextDocument.Text, p.TextDocument.Version, true, p.TextDocument.Language)
 		}
 	case "textDocument/didChange":
-		var p struct {
-			TextDocument struct {
-				URI     string `json:"uri"`
-				Version int    `json:"version"`
-			} `json:"textDocument"`
-			ContentChanges []struct {
-				Range *span  `json:"range"`
-				Text  string `json:"text"`
-			} `json:"contentChanges"`
-		}
-		if err = decodeParams(raw, &p); err == nil {
-			uri := canonicalURI(p.TextDocument.URI)
-			d := s.docs[uri]
-			if d == nil || !d.open || p.TextDocument.Version <= d.version {
-				return nil
-			}
-			text := d.text
-			for _, change := range p.ContentChanges {
-				if change.Range == nil {
-					text = change.Text
-					continue
-				}
-				src := newSource(text)
-				begin, e1 := src.offset(change.Range.Start)
-				end, e2 := src.offset(change.Range.End)
-				if e1 != nil || e2 != nil || end < begin {
-					s.log.Printf("ignored invalid edit for %s", uri)
-					return nil
-				}
-				text = text[:begin] + change.Text + text[end:]
-			}
-			s.docs[uri] = parseDocumentLanguage(uri, text, p.TextDocument.Version, true, d.language)
+		if err = s.changeDocument(raw); err == nil && s.deferChanges {
+			return nil
 		}
 	case "textDocument/didClose":
 		var p struct {
@@ -408,10 +357,29 @@ func (s *server) notification(method string, raw json.RawMessage) error {
 		if err = decodeParams(raw, &p); err == nil {
 			uri := canonicalURI(p.TextDocument.URI)
 			delete(s.docs, uri)
-			s.reindex()
+			s.refreshDiskDocument(uri)
 		}
-	case "textDocument/didSave", "workspace/didChangeWatchedFiles":
-		s.reindex()
+	case "textDocument/didSave":
+		var p struct {
+			TextDocument struct {
+				URI string `json:"uri"`
+			} `json:"textDocument"`
+		}
+		if err = decodeParams(raw, &p); err == nil {
+			s.refreshDiskDocument(p.TextDocument.URI)
+		}
+	case "workspace/didChangeWatchedFiles":
+		var p struct {
+			Changes []struct {
+				URI  string `json:"uri"`
+				Type int    `json:"type"`
+			} `json:"changes"`
+		}
+		if err = decodeParams(raw, &p); err == nil {
+			for _, change := range p.Changes {
+				s.refreshDiskDocument(change.URI)
+			}
+		}
 	case "workspace/didChangeConfiguration":
 		var p struct {
 			Settings struct {
@@ -421,6 +389,7 @@ func (s *server) notification(method string, raw json.RawMessage) error {
 		p.Settings.TL2 = s.options
 		if err = decodeParams(raw, &p); err == nil {
 			s.options = p.Settings.TL2
+			s.lastDiagnostics = nil
 			s.reindex()
 		}
 	case "workspace/didChangeWorkspaceFolders":
@@ -457,7 +426,7 @@ func (s *server) notification(method string, raw json.RawMessage) error {
 		s.log.Print(err.Message)
 		return nil
 	}
-	s.rebuildDefinitions()
+	s.refreshIndex(false)
 	return s.publishDiagnostics()
 }
 
@@ -468,4 +437,22 @@ func Main() {
 		fmt.Fprintln(os.Stderr, "tl2lsp:", err)
 		os.Exit(1)
 	}
+}
+
+func equalDiagnostics(a, b []diagnostic) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i, left := range a {
+		right := b[i]
+		if left.Range != right.Range || left.Severity != right.Severity || left.Source != right.Source || left.Message != right.Message || left.Code != right.Code || len(left.RelatedInformation) != len(right.RelatedInformation) {
+			return false
+		}
+		for j, related := range left.RelatedInformation {
+			if related != right.RelatedInformation[j] {
+				return false
+			}
+		}
+	}
+	return true
 }

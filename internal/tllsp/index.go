@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/VKCOM/tl/internal/tlast"
 )
@@ -35,7 +36,15 @@ type reference struct {
 	local      *symbol
 }
 
+type documentCache struct {
+	symbolsOnce sync.Once
+	tokensOnce  sync.Once
+	symbols     []documentSymbol
+	tokens      []int
+}
+
 type document struct {
+	cache    *documentCache
 	uri      string
 	language string
 	source
@@ -66,7 +75,7 @@ func parseDocumentLanguage(uri, text string, version int, open bool, language st
 			language = "tl"
 		}
 	}
-	d := &document{uri: uri, language: language, source: newSource(text), version: version, open: open}
+	d := &document{cache: &documentCache{}, uri: uri, language: language, source: newSource(text), version: version, open: open}
 	if language == "tl" {
 		d.parseTL(path)
 		return d
@@ -234,6 +243,11 @@ func (d *document) addTypeRef(ref tlast.TL2TypeRef, locals map[string]*symbol) {
 }
 
 func (d *document) documentSymbols() []documentSymbol {
+	d.cache.symbolsOnce.Do(func() { d.cache.symbols = d.computeDocumentSymbols() })
+	return d.cache.symbols
+}
+
+func (d *document) computeDocumentSymbols() []documentSymbol {
 	result := make([]documentSymbol, 0, len(d.symbols))
 	var convert func(*symbol) documentSymbol
 	convert = func(s *symbol) documentSymbol {
@@ -259,6 +273,9 @@ func (def definition) location() location {
 }
 
 func (s *server) documents() []*document {
+	if s.index != nil {
+		return s.index.ordered
+	}
 	docs := make([]*document, 0, len(s.docs))
 	for _, d := range s.docs {
 		docs = append(docs, d)
@@ -271,17 +288,7 @@ func (s *server) definitions(name string) []definition {
 	return s.byName[name]
 }
 
-func (s *server) rebuildDefinitions() {
-	defer s.rebuildSemanticDiagnostics()
-	s.byName = map[string][]definition{}
-	for _, d := range s.documents() {
-		for _, sym := range d.exported {
-			if sym.kind != 12 {
-				s.byName[sym.name] = append(s.byName[sym.name], definition{d, sym})
-			}
-		}
-	}
-}
+func (s *server) rebuildDefinitions() { s.refreshIndex(true) }
 
 func (s *server) symbolAt(d *document, offset int) ([]definition, span) {
 	for _, ref := range d.refs {
@@ -315,25 +322,9 @@ func (s *server) symbolAt(d *document, offset int) ([]definition, span) {
 // Scanning is restricted to schemaPaths, or the workspace folders by default.
 // Open buffers always override disk content, including during watcher events.
 func (s *server) reindex() {
-	defer s.rebuildDefinitions()
-	for uri, d := range s.docs {
-		if !d.open {
-			delete(s.docs, uri)
-		}
-	}
-	paths := s.roots
-	if len(s.options.SchemaPaths) > 0 {
-		paths = nil
-		for _, path := range s.options.SchemaPaths {
-			if !filepath.IsAbs(path) {
-				if len(s.roots) == 0 {
-					continue
-				}
-				path = filepath.Join(s.roots[0], path)
-			}
-			paths = append(paths, filepath.Clean(path))
-		}
-	}
+	defer s.refreshIndex(false)
+	seen := map[string]bool{}
+	paths := s.schemaRoots()
 	for _, root := range paths {
 		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
@@ -355,6 +346,7 @@ func (s *server) reindex() {
 				return nil
 			}
 			uri := uriFromPath(path)
+			seen[uri] = true
 			if d := s.docs[uri]; d != nil && d.open {
 				return nil
 			}
@@ -363,11 +355,18 @@ func (s *server) reindex() {
 				s.log.Printf("read %s: %v", path, err)
 				return nil
 			}
-			s.docs[uri] = parseDocument(uri, string(text), 0, false)
+			if d := s.docs[uri]; d == nil || d.text != string(text) {
+				s.docs[uri] = parseDocument(uri, string(text), 0, false)
+			}
 			return nil
 		})
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			s.log.Printf("index %s: %v", root, err)
+		}
+	}
+	for uri, d := range s.docs {
+		if !d.open && !seen[uri] {
+			delete(s.docs, uri)
 		}
 	}
 }
@@ -413,4 +412,79 @@ func (d *document) primitives() []string {
 		return tlPrimitives
 	}
 	return primitives
+}
+
+func (s *server) schemaRoots() []string {
+	paths := append([]string(nil), s.roots...)
+	if len(s.options.SchemaPaths) > 0 {
+		paths = nil
+		for _, path := range s.options.SchemaPaths {
+			if !filepath.IsAbs(path) {
+				if len(s.roots) == 0 {
+					continue
+				}
+				path = filepath.Join(s.roots[0], path)
+			}
+			paths = append(paths, filepath.Clean(path))
+		}
+	}
+	return paths
+}
+
+// File notifications identify the affected URI; a full walk is only needed for
+// startup, configuration or workspace-folder changes.
+func (s *server) refreshDiskDocument(uri string) {
+	uri = canonicalURI(uri)
+	if d := s.docs[uri]; d != nil && d.open {
+		return
+	}
+	path, err := pathFromURI(uri)
+	if err != nil || !s.schemaFile(path) {
+		delete(s.docs, uri)
+		return
+	}
+	entry, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		delete(s.docs, uri)
+		return
+	}
+	if err != nil {
+		s.log.Printf("index %s: %v", path, err)
+		return
+	}
+	if !entry.Mode().IsRegular() {
+		delete(s.docs, uri)
+		return
+	}
+	text, err := os.ReadFile(path)
+	if err != nil {
+		s.log.Printf("read %s: %v", path, err)
+		return
+	}
+	if d := s.docs[uri]; d == nil || d.text != string(text) {
+		s.docs[uri] = parseDocument(uri, string(text), 0, false)
+	}
+}
+
+func (s *server) schemaFile(path string) bool {
+	if ext := filepath.Ext(path); ext != ".tl" && ext != ".tl2" {
+		return false
+	}
+	for _, root := range s.schemaRoots() {
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		excluded := false
+		for _, part := range strings.Split(filepath.Join(filepath.Base(root), rel), string(filepath.Separator)) {
+			switch part {
+			case ".git", "node_modules", "target", "vendor", "out", ".zed", ".vscode":
+				excluded = true
+			}
+		}
+		if !excluded {
+			return true
+		}
+	}
+	return false
 }

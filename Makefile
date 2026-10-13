@@ -19,12 +19,16 @@ build: # build static binary to run on many linux  variants
 	CGO_ENABLED=0 $(GO) build -buildvcs=$(BUILD_VCS) -o target/bin/tl2client ./cmd/tl2client
 	CGO_ENABLED=0 $(GO) build -buildvcs=$(BUILD_VCS) -o target/bin/tl2lsp ./cmd/tl2lsp
 
-.PHONY: build-lsp test-lsp
+.PHONY: build-lsp test-lsp bench-lsp
 build-lsp:
 	CGO_ENABLED=0 $(GO) build -buildvcs=$(BUILD_VCS) -o target/bin/tl2lsp ./cmd/tl2lsp
 
 test-lsp:
 	$(GO) test -race ./internal/tlast ./internal/tllsp ./cmd/tl2lsp
+
+LSP_BENCH_ARGS ?= -benchtime=300ms -count=5 -cpu=4
+bench-lsp:
+	$(GO) test ./internal/tllsp -run '^$$' -bench '^BenchmarkLSP' -benchmem $(LSP_BENCH_ARGS)
 
 .PHONY: gen_bootstrap
 gen_bootstrap: build # do not set --basicPkgPath, or you'll have hard time updating basictl

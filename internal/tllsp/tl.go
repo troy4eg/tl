@@ -24,9 +24,8 @@ func (d *document) parseTL(path string) {
 		if c.IsFunction {
 			s.kind = 12
 			s.globalKind = "function"
-		} else {
-			d.exported = append(d.exported, s)
 		}
+		d.exported = append(d.exported, s)
 		for _, p := range c.TemplateArguments {
 			s.params = append(s.params, typeParameter{p.FieldName, p.IsNat})
 			pb, pe := d.parserRange(p.PR)

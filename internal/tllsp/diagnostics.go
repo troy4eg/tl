@@ -3,14 +3,20 @@ package tllsp
 import "github.com/VKCOM/tl/internal/tlast"
 
 func (s *server) rebuildSemanticDiagnostics() {
-	var tl tlast.TL
-	var tl2 []tlast.TL2Combinator
+	files := []tlast.SchemaDeclarations{}
 	for _, d := range s.documents() {
-		tl = append(tl, d.tl...)
-		tl2 = append(tl2, d.tl2...)
+		files = append(files, tlast.SchemaDeclarations{TL: d.tl, TL2: d.tl2})
 	}
+	validator := tlast.NewSchemaValidator(files)
 	s.semantic = map[string][]diagnostic{}
-	for _, item := range tlast.ValidateSchema(tl, tl2) {
+	s.addSemanticDiagnostics(validator.GlobalErrors())
+	for _, file := range files {
+		s.addSemanticDiagnostics(validator.Validate(file))
+	}
+}
+
+func (s *server) addSemanticDiagnostics(items []tlast.SemanticError) {
+	for _, item := range items {
 		uri := uriFromPath(item.Pos.Begin.FileName())
 		d := s.docs[uri]
 		if d == nil {

@@ -16,6 +16,11 @@ var tokenTypes = []string{"type", "typeParameter", "property", "enumMember", "fu
 type semanticToken struct{ begin, end, kind int }
 
 func (d *document) semanticTokens() []int {
+	d.cache.tokensOnce.Do(func() { d.cache.tokens = d.computeSemanticTokens() })
+	return d.cache.tokens
+}
+
+func (d *document) computeSemanticTokens() []int {
 	var tokens []semanticToken
 	add := func(begin, end, kind int) {
 		if end > begin {

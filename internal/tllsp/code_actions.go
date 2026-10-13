@@ -2,6 +2,7 @@ package tllsp
 
 import (
 	"fmt"
+	"github.com/VKCOM/tl/internal/tlast"
 	"sort"
 	"strings"
 )
@@ -181,6 +182,9 @@ func (s *server) typeFixes(d *document, diag diagnostic) []textEdit {
 	})
 	var edits []textEdit
 	for _, c := range candidates {
+		if s.cancelled() {
+			return nil
+		}
 		edit := textEdit{diag.Range, c.name}
 		if s.validTypeFix(d, diag, edit, b, e) {
 			edits = append(edits, edit)
@@ -231,7 +235,19 @@ func (s *server) validTypeFix(d *document, target diagnostic, edit textEdit, beg
 		candidate.docs[uri] = doc
 	}
 	candidate.docs[d.uri] = updated
-	candidate.rebuildDefinitions()
+	candidate.rebuildNavigation()
+	candidate.semantic = map[string][]diagnostic{}
+	if s.index != nil {
+		files := make([]tlast.SchemaDeclarations, 0, len(candidate.docs))
+		for _, doc := range candidate.documents() {
+			files = append(files, tlast.SchemaDeclarations{TL: doc.tl, TL2: doc.tl2})
+		}
+		validator := tlast.NewSchemaValidator(files)
+		candidate.addSemanticDiagnostics(validator.GlobalErrors())
+		candidate.addSemanticDiagnostics(validator.Validate(tlast.SchemaDeclarations{TL: updated.tl, TL2: updated.tl2}))
+	} else {
+		candidate.rebuildSemanticDiagnostics()
+	}
 	// Removing one diagnostic must not introduce an arity/category error,
 	// an invalid bare reference, or a different failure at this occurrence.
 	delta := len(edit.NewText) - (end - begin)

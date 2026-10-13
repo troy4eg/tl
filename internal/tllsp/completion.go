@@ -69,12 +69,13 @@ func (s *server) completion(d *document, offset int) []completionItem {
 	a := d.assistance(offset, true)
 	out := []completionItem{}
 	seen := map[string]bool{}
+	editRange := d.span(a.begin, a.end)
 	add := func(name string, kind int, detail, comment, insert string, snippet bool) {
 		if seen[name] || !strings.HasPrefix(name, a.prefix) {
 			return
 		}
 		seen[name] = true
-		item := completionItem{Label: name, Kind: kind, Detail: detail, TextEdit: &textEdit{d.span(a.begin, a.end), insert}}
+		item := completionItem{Label: name, Kind: kind, Detail: detail, TextEdit: &textEdit{editRange, insert}}
 		if snippet {
 			item.InsertTextFormat = 2
 		}
@@ -140,6 +141,37 @@ func (s *server) completion(d *document, offset int) []completionItem {
 			add("0", 12, "Natural-number literal", "", "0", false)
 		}
 		if wantType {
+			// Reserve once for broad results. Growing the item slice repeatedly
+			// copied several MiB on every empty-prefix completion.
+			if s.index != nil {
+				names := s.index.names
+				begin := sort.SearchStrings(names, a.prefix)
+				end := sort.SearchStrings(names, a.prefix+"\xff")
+				capacity := len(out) + len(d.primitives()) + 3
+				for _, name := range names[begin:end] {
+					if name == "_" {
+						continue
+					}
+					for _, def := range s.byName[name] {
+						if !a.bare || def.sym.globalKind == "constructor" {
+							capacity++
+							break
+						}
+					}
+				}
+				if capacity > cap(out) {
+					reserved := make([]completionItem, len(out), capacity)
+					copy(reserved, out)
+					out = reserved
+				}
+				if capacity > 32 {
+					reserved := make(map[string]bool, capacity)
+					for name, value := range seen {
+						reserved[name] = value
+					}
+					seen = reserved
+				}
+			}
 			for _, p := range d.primitives() {
 				if p == "Type" || p == "#" && (!a.mask || a.call != nil) {
 					continue
@@ -148,36 +180,49 @@ func (s *server) completion(d *document, offset int) []completionItem {
 			}
 			next := nextAssistCharacter(d.text, a.end)
 			existing := next == '<' || a.apply && (nameByte(next) || next == '%' || next == '(')
-			for _, doc := range s.documents() {
-				for _, sym := range doc.exported {
-					if sym.kind == 12 || sym.name == "_" || a.bare && sym.globalKind != "constructor" {
-						continue
-					}
-					insert, snippet := sym.name, false
-					if s.snippetSupport && len(sym.params) > 0 && !a.resultDeclaration && !existing {
-						var args []string
-						for i, p := range sym.params {
-							value := "int32"
-							if d.language == "tl" {
-								value = "int"
-							}
-							if p.nat {
-								value = "0"
-							}
-							args = append(args, fmt.Sprintf("${%d:%s}", i+1, value))
+			addGlobal := func(sym *symbol) {
+				if sym.kind == 12 || sym.name == "_" || a.bare && sym.globalKind != "constructor" {
+					return
+				}
+				insert, snippet := sym.name, false
+				if s.snippetSupport && len(sym.params) > 0 && !a.resultDeclaration && !existing {
+					var args []string
+					for i, p := range sym.params {
+						value := "int32"
+						if d.language == "tl" {
+							value = "int"
 						}
-						if a.apply {
-							insert += " " + strings.Join(args, " ") + "$0"
-						} else {
-							insert += "<" + strings.Join(args, ", ") + ">$0"
+						if p.nat {
+							value = "0"
 						}
-						snippet = true
+						args = append(args, fmt.Sprintf("${%d:%s}", i+1, value))
 					}
-					kind := 22
-					if sym.kind == 10 {
-						kind = 13
+					if a.apply {
+						insert += " " + strings.Join(args, " ") + "$0"
+					} else {
+						insert += "<" + strings.Join(args, ", ") + ">$0"
 					}
-					add(sym.name, kind, sym.signature, sym.comment, insert, snippet)
+					snippet = true
+				}
+				kind := 22
+				if sym.kind == 10 {
+					kind = 13
+				}
+				add(sym.name, kind, sym.signature, sym.comment, insert, snippet)
+			}
+			if s.index != nil {
+				names := s.index.names
+				begin := sort.SearchStrings(names, a.prefix)
+				for i := begin; i < len(names) && strings.HasPrefix(names[i], a.prefix); i++ {
+					for _, def := range s.byName[names[i]] {
+						addGlobal(def.sym)
+					}
+				}
+			} else {
+				for _, doc := range s.documents() {
+					for _, sym := range doc.exported {
+						addGlobal(sym)
+					}
 				}
 			}
 		}
