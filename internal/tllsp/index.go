@@ -22,6 +22,9 @@ type symbol struct {
 	alias                          *tlast.TL2TypeRef
 	incomplete                     bool
 	name, signature, comment       string
+	signatureOnce                  sync.Once
+	typeDeclaration                *tlast.TL2Combinator
+	legacyType                     *tlast.TypeRef
 	globalKind                     string
 	scope                          *symbol
 	kind                           int
@@ -85,17 +88,32 @@ func parseDocumentLanguage(uri, text string, version int, open bool, language st
 		b, e := d.parserRange(err.Pos)
 		d.errors = append(d.errors, diagnostic{Range: d.span(b, e), Severity: 1, Source: "tl2lsp", Message: err.Error(), Code: "syntax"})
 	}
-	for i, comb := range ast.Declarations {
-		if !ast.Incomplete[i] {
-			d.tl2 = append(d.tl2, comb)
+	// Complete files reuse the parser's declaration array. A partial file keeps
+	// a separate semantic list, while symbols retain the complete editing AST.
+	d.tl2 = ast.Declarations
+	complete := 0
+	for _, incomplete := range ast.Incomplete {
+		if !incomplete {
+			complete++
 		}
+	}
+	if complete != len(ast.Declarations) {
+		d.tl2 = make([]tlast.TL2Combinator, 0, complete)
+		for i := range ast.Declarations {
+			if !ast.Incomplete[i] {
+				d.tl2 = append(d.tl2, ast.Declarations[i])
+			}
+		}
+	}
+	d.symbols = make([]*symbol, 0, len(ast.Declarations))
+	for i := range ast.Declarations {
+		comb := &ast.Declarations[i]
 		b, e := d.parserRange(comb.PR)
 		s := &symbol{begin: b, end: e, kind: 23, globalKind: "type", comment: cleanComment(comb.CommentBefore), locals: map[string]*symbol{}}
-		copyComb := comb
-		copyComb.CommentBefore = ""
-		s.signature = copyComb.String()
+		s.typeDeclaration = comb
 		s.incomplete = ast.Incomplete[i]
 		if s.incomplete {
+			s.typeDeclaration = nil
 			s.signature = strings.TrimSpace(text[b:e])
 		}
 		var namePR tlast.PositionRange
@@ -138,17 +156,16 @@ func parseDocumentLanguage(uri, text string, version int, open bool, language st
 					break
 				}
 			}
-			d.addDefinition(result, comb.FuncDecl.ReturnType, result.locals)
+			d.addDefinition(result, &comb.FuncDecl.ReturnType, result.locals)
 			s.children = append(s.children, result.children...)
 			if resultFound {
 				d.assistScopes = append(d.assistScopes, result)
 			}
 		} else {
 			if comb.TypeDecl.Type.IsTypeAlias {
-				alias := comb.TypeDecl.Type.TypeAlias
-				s.alias = &alias
+				s.alias = &comb.TypeDecl.Type.TypeAlias
 			}
-			d.addDefinition(s, comb.TypeDecl.Type, s.locals)
+			d.addDefinition(s, &comb.TypeDecl.Type, s.locals)
 		}
 		if s.incomplete {
 			walkSymbols([]*symbol{s}, func(sym *symbol) { sym.incomplete = true })
@@ -157,6 +174,28 @@ func parseDocumentLanguage(uri, text string, version int, open bool, language st
 	}
 	d.exported = d.symbols
 	return d
+}
+
+// Signatures are presentation data. Render each one only when a request needs
+// it, and share the result safely between concurrent readers of a snapshot.
+func (s *symbol) detail() string {
+	s.signatureOnce.Do(func() {
+		if s.signature != "" {
+			return
+		}
+		if s.typeDeclaration != nil {
+			comb := *s.typeDeclaration
+			comb.CommentBefore = ""
+			s.signature = comb.String()
+		} else if s.valueType != nil {
+			var out strings.Builder
+			out.WriteString(s.name)
+			out.WriteString(": ")
+			s.valueType.Print(&out)
+			s.signature = out.String()
+		}
+	})
+	return s.signature
 }
 
 func cleanComment(comment string) string {
@@ -172,37 +211,39 @@ func (d *document) addFields(parent *symbol, fields []tlast.TL2Field, locals map
 	// uint32). Register all names, as the compiler does, before references.
 	// Argument category validation belongs to the semantic compiler.
 	fieldSymbols := make([]*symbol, len(fields))
-	for i, field := range fields {
+	for i := range fields {
+		field := &fields[i]
 		if field.Name == "" {
 			continue
 		}
 		b, e := d.parserRange(field.PR)
 		nb, ne := d.parserRange(field.PRName)
-		child := &symbol{name: field.Name, kind: 8, scope: parent, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: field.Name + ": " + field.Type.String(), comment: cleanComment(field.CommentBefore)}
-		typ := field.Type
-		child.valueType, child.optional = &typ, field.IsOptional || field.IsIgnored || field.IsOmitted()
+		child := &symbol{name: field.Name, kind: 8, scope: parent, begin: b, end: e, nameBegin: nb, nameEnd: ne, comment: cleanComment(field.CommentBefore)}
+		child.valueType, child.optional = &field.Type, field.IsOptional || field.IsIgnored || field.IsOmitted()
 		fieldSymbols[i] = child
 		locals[field.Name] = child
 	}
-	for i, field := range fields {
+	for i := range fields {
+		field := &fields[i]
 		if child := fieldSymbols[i]; child != nil {
 			parent.children = append(parent.children, child)
 		}
-		d.addTypeRef(field.Type, locals)
+		d.addTypeRef(&field.Type, locals)
 	}
 }
 
-func (d *document) addDefinition(parent *symbol, def tlast.TL2TypeDefinition, locals map[string]*symbol) {
+func (d *document) addDefinition(parent *symbol, def *tlast.TL2TypeDefinition, locals map[string]*symbol) {
 	if def.IsTypeAlias {
-		d.addTypeRef(def.TypeAlias, locals)
+		d.addTypeRef(&def.TypeAlias, locals)
 		return
 	}
-	st := def.StructType
+	st := &def.StructType
 	if !st.IsUnionType {
 		d.addFields(parent, st.ConstructorFields, locals)
 		return
 	}
-	for _, variant := range st.UnionType.Variants {
+	for i := range st.UnionType.Variants {
+		variant := &st.UnionType.Variants[i]
 		variantLocals := map[string]*symbol{}
 		for name, local := range locals {
 			variantLocals[name] = local
@@ -211,7 +252,7 @@ func (d *document) addDefinition(parent *symbol, def tlast.TL2TypeDefinition, lo
 		nb, ne := d.parserRange(variant.PRName)
 		child := &symbol{name: variant.Name, kind: 22, scope: parent, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: variant.Name, comment: cleanComment(variant.CommentBefore), locals: variantLocals}
 		if variant.IsTypeAlias {
-			d.addTypeRef(variant.TypeAlias, variantLocals)
+			d.addTypeRef(&variant.TypeAlias, variantLocals)
 		} else {
 			d.addFields(child, variant.Fields, variantLocals)
 		}
@@ -219,25 +260,26 @@ func (d *document) addDefinition(parent *symbol, def tlast.TL2TypeDefinition, lo
 	}
 }
 
-func (d *document) addTypeRef(ref tlast.TL2TypeRef, locals map[string]*symbol) {
+func (d *document) addTypeRef(ref *tlast.TL2TypeRef, locals map[string]*symbol) {
 	if ref.BracketType != nil {
 		br := ref.BracketType
 		if br.HasIndex && !br.IndexType.IsNumber {
-			d.addTypeRef(br.IndexType.Type, locals)
+			d.addTypeRef(&br.IndexType.Type, locals)
 		}
-		d.addTypeRef(br.ArrayType, locals)
+		d.addTypeRef(&br.ArrayType, locals)
 		return
 	}
-	app := ref.SomeType
+	app := &ref.SomeType
 	name := app.Name.String()
 	if name == "" {
 		return
 	}
 	b, e := d.parserRange(app.PRName)
 	d.refs = append(d.refs, reference{name, b, e, locals[name]})
-	for _, arg := range app.Arguments {
+	for i := range app.Arguments {
+		arg := &app.Arguments[i]
 		if !arg.IsNumber {
-			d.addTypeRef(arg.Type, locals)
+			d.addTypeRef(&arg.Type, locals)
 		}
 	}
 }
@@ -251,7 +293,7 @@ func (d *document) computeDocumentSymbols() []documentSymbol {
 	result := make([]documentSymbol, 0, len(d.symbols))
 	var convert func(*symbol) documentSymbol
 	convert = func(s *symbol) documentSymbol {
-		out := documentSymbol{Name: s.name, Detail: s.signature, Kind: s.kind, Range: d.span(s.begin, s.end), SelectionRange: d.span(s.nameBegin, s.nameEnd)}
+		out := documentSymbol{Name: s.name, Detail: s.detail(), Kind: s.kind, Range: d.span(s.begin, s.end), SelectionRange: d.span(s.nameBegin, s.nameEnd)}
 		for _, c := range s.children {
 			out.Children = append(out.Children, convert(c))
 		}
@@ -274,7 +316,7 @@ func (def definition) location() location {
 
 func (s *server) documents() []*document {
 	if s.index != nil {
-		return s.index.ordered
+		return s.index.documents()
 	}
 	docs := make([]*document, 0, len(s.docs))
 	for _, d := range s.docs {
@@ -285,7 +327,13 @@ func (s *server) documents() []*document {
 }
 
 func (s *server) definitions(name string) []definition {
-	return s.byName[name]
+	if s.byName != nil {
+		return s.byName[name]
+	}
+	if s.index != nil {
+		return s.index.byName.get(name)
+	}
+	return nil
 }
 
 func (s *server) rebuildDefinitions() { s.refreshIndex(true) }
@@ -356,7 +404,7 @@ func (s *server) reindex() {
 				return nil
 			}
 			if d := s.docs[uri]; d == nil || d.text != string(text) {
-				s.docs[uri] = parseDocument(uri, string(text), 0, false)
+				s.setDocument(uri, parseDocument(uri, string(text), 0, false))
 			}
 			return nil
 		})
@@ -366,7 +414,7 @@ func (s *server) reindex() {
 	}
 	for uri, d := range s.docs {
 		if !d.open && !seen[uri] {
-			delete(s.docs, uri)
+			s.setDocument(uri, nil)
 		}
 	}
 }
@@ -440,12 +488,12 @@ func (s *server) refreshDiskDocument(uri string) {
 	}
 	path, err := pathFromURI(uri)
 	if err != nil || !s.schemaFile(path) {
-		delete(s.docs, uri)
+		s.setDocument(uri, nil)
 		return
 	}
 	entry, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		delete(s.docs, uri)
+		s.setDocument(uri, nil)
 		return
 	}
 	if err != nil {
@@ -453,7 +501,7 @@ func (s *server) refreshDiskDocument(uri string) {
 		return
 	}
 	if !entry.Mode().IsRegular() {
-		delete(s.docs, uri)
+		s.setDocument(uri, nil)
 		return
 	}
 	text, err := os.ReadFile(path)
@@ -462,7 +510,7 @@ func (s *server) refreshDiskDocument(uri string) {
 		return
 	}
 	if d := s.docs[uri]; d == nil || d.text != string(text) {
-		s.docs[uri] = parseDocument(uri, string(text), 0, false)
+		s.setDocument(uri, parseDocument(uri, string(text), 0, false))
 	}
 }
 

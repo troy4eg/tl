@@ -10,13 +10,13 @@ import (
 )
 
 func (s *server) natField(d *document, sym *symbol) bool {
-	if sym.kind != 8 || sym.optional || sym.valueType == nil {
+	if sym.kind != 8 || sym.optional {
 		return false
 	}
 	if d.language == "tl" {
-		return sym.valueType.SomeType.Name.String() == "#"
+		return sym.legacyType != nil && sym.legacyType.Type.String() == "#"
 	}
-	return s.natType(*sym.valueType, nil, 0)
+	return sym.valueType != nil && s.natType(*sym.valueType, nil, 0)
 }
 
 func (s *server) natType(ref tlast.TL2TypeRef, bindings map[string]tlast.TL2TypeRef, depth int) bool {
@@ -134,7 +134,7 @@ func (s *server) completion(d *document, offset int) []completionItem {
 				if local.kind == 8 {
 					kind = 5
 				}
-				add(local.name, kind, local.signature, local.comment, local.name, false)
+				add(local.name, kind, local.detail(), local.comment, local.name, false)
 			}
 		}
 		if wantNat {
@@ -144,21 +144,18 @@ func (s *server) completion(d *document, offset int) []completionItem {
 			// Reserve once for broad results. Growing the item slice repeatedly
 			// copied several MiB on every empty-prefix completion.
 			if s.index != nil {
-				names := s.index.names
-				begin := sort.SearchStrings(names, a.prefix)
-				end := sort.SearchStrings(names, a.prefix+"\xff")
 				capacity := len(out) + len(d.primitives()) + 3
-				for _, name := range names[begin:end] {
+				s.index.byName.prefix(a.prefix, func(name string, defs []definition) {
 					if name == "_" {
-						continue
+						return
 					}
-					for _, def := range s.byName[name] {
+					for _, def := range defs {
 						if !a.bare || def.sym.globalKind == "constructor" {
 							capacity++
 							break
 						}
 					}
-				}
+				})
 				if capacity > cap(out) {
 					reserved := make([]completionItem, len(out), capacity)
 					copy(reserved, out)
@@ -208,16 +205,14 @@ func (s *server) completion(d *document, offset int) []completionItem {
 				if sym.kind == 10 {
 					kind = 13
 				}
-				add(sym.name, kind, sym.signature, sym.comment, insert, snippet)
+				add(sym.name, kind, sym.detail(), sym.comment, insert, snippet)
 			}
 			if s.index != nil {
-				names := s.index.names
-				begin := sort.SearchStrings(names, a.prefix)
-				for i := begin; i < len(names) && strings.HasPrefix(names[i], a.prefix); i++ {
-					for _, def := range s.byName[names[i]] {
+				s.index.byName.prefix(a.prefix, func(_ string, defs []definition) {
+					for _, def := range defs {
 						addGlobal(def.sym)
 					}
-				}
+				})
 			} else {
 				for _, doc := range s.documents() {
 					for _, sym := range doc.exported {

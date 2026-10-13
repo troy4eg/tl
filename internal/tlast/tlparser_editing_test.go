@@ -1,7 +1,9 @@
 package tlast
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -99,5 +101,52 @@ func TestEditingRecoveryKeepsFollowingDocumentation(t *testing.T) {
 	p := ParseTL2FileEditing(text, "test.tl2")
 	if len(p.Declarations) != 2 || p.Declarations[1].CommentBefore != "// following" {
 		t.Fatalf("following documentation: %+v", p)
+	}
+}
+
+func TestEditingCompleteTL2MatchesStrictAST(t *testing.T) {
+	var large strings.Builder
+	large.WriteString("Many = ")
+	for i := range 80 {
+		fmt.Fprintf(&large, "field%d:List<Box<int32,7>,3> ", i)
+	}
+	large.WriteString(";")
+	for _, text := range []string{
+		"// 😀 header\r\nBox<T:Type,N:#> = value:T items:[N]List<T,7>;\r\nUse = box:Box<int32,2>;",
+		"Choice = | first value:List<int32> | second values:[]string; get#12345678 id:int32 => value:Choice;",
+		"Alias <=> Box<string,3>; Empty = ; Ignored = _:byte _hidden:uint32 optional?:int32;",
+		large.String(),
+	} {
+		strict, err := ParseTL2File(text, "parity.tl2", LexerOptions{LexerLanguage: TL2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		edited := ParseTL2FileEditing(text, "parity.tl2")
+		if len(edited.Errors) != 0 || !reflect.DeepEqual(edited.Declarations, strict.Combinators) {
+			t.Fatalf("editing AST/ranges differ from strict parse: errors=%v, text=%q", edited.Errors, text)
+		}
+		for _, incomplete := range edited.Incomplete {
+			if incomplete {
+				t.Fatal("complete declaration marked incomplete")
+			}
+		}
+	}
+}
+
+func TestEditingLargeTL1FieldsAndSections(t *testing.T) {
+	var text strings.Builder
+	text.WriteString("---types---\nitem {T:Type} flags:# ")
+	for i := range 80 {
+		fmt.Fprintf(&text, "field%d:flags.0?Box<T,3> nested%d:3*[n:# value:(Box T)] ", i, i)
+	}
+	text.WriteString("= Item T;\n---functions---\nget value:Item<int> = Item int;\n---types---\nend = End;")
+	p := ParseTLFileEditing(text.String(), "large.tl")
+	if len(p.Errors) != 0 || len(p.Declarations) != 3 || len(p.Declarations[0].Fields) != 161 || !p.Declarations[1].IsFunction || p.Declarations[2].IsFunction {
+		t.Fatalf("large TL1 parse/sections: %v", p.Errors)
+	}
+	for i, field := range p.Declarations[0].Fields[1:] {
+		if i%2 == 0 && (field.Mask == nil || field.Mask.MaskName != "flags") || i%2 == 1 && (!field.IsRepeated || len(field.ScaleRepeat.Rep) != 2) {
+			t.Fatalf("lost nested field or mask at %d", i)
+		}
 	}
 }

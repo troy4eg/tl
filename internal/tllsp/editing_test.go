@@ -47,7 +47,7 @@ func TestEditingNavigationAndScopes(t *testing.T) {
 				t.Fatalf("rename accepted partial syntax: %v", err)
 			}
 			defs, _ = s.symbolAt(d, strings.Index(tc.text, "value:Item")+6)
-			if len(defs) != 1 || defs[0].doc != known || !strings.Contains(defs[0].sym.signature, "id:") {
+			if len(defs) != 1 || defs[0].doc != known || !strings.Contains(defs[0].sym.detail(), "id:") {
 				t.Fatalf("global definition/hover: %+v", defs)
 			}
 			items := s.completion(d, strings.Index(tc.text, "value:")+6)

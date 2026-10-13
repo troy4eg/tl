@@ -17,9 +17,9 @@ func TestIncrementalDiagnosticsMatchFullValidation(t *testing.T) {
 	set := func(file, text string) {
 		uri := "file:///tmp/incremental-" + file
 		if text == "" {
-			delete(s.docs, uri)
+			s.setDocument(uri, nil)
 		} else {
-			s.docs[uri] = parseDocument(uri, text, 1, true)
+			s.setDocument(uri, parseDocument(uri, text, 1, true))
 		}
 		s.refreshIndex(false)
 	}
@@ -31,11 +31,11 @@ func TestIncrementalDiagnosticsMatchFullValidation(t *testing.T) {
 		if !reflect.DeepEqual(s.semantic, full.semantic) {
 			t.Fatalf("incremental diagnostics differ\nincremental: %+v\nfull: %+v", s.semantic, full.semantic)
 		}
-		for name, defs := range full.byName {
-			if !reflect.DeepEqual(defs, s.byName[name]) {
+		full.index.byName.each(func(name string, defs []definition) {
+			if !reflect.DeepEqual(defs, s.definitions(name)) {
 				t.Fatalf("definitions differ for %s", name)
 			}
-		}
+		})
 	}
 	steps := [][2]string{
 		{"use.tl2", "Use = n:Count values:[n]int32 box:Box<7> missing:Later;"},
@@ -72,7 +72,7 @@ func TestUnchangedFilesAndSnapshotsAreReused(t *testing.T) {
 	}
 	writeFile(t, a, "Other = id:int32;")
 	s.reindex()
-	if old.byName["Item"][0].sym.name != "Item" || len(old.byName["Other"]) != 0 {
+	if old.byName.get("Item")[0].sym.name != "Item" || len(old.byName.get("Other")) != 0 {
 		t.Fatal("old generation was mutated")
 	}
 	if s.docs[uriFromPath(b)] != oldDoc || len(s.semantic[oldDoc.uri]) != 1 {
@@ -82,7 +82,7 @@ func TestUnchangedFilesAndSnapshotsAreReused(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.reindex()
-	if len(s.byName["Other"]) != 0 {
+	if len(s.definitions("Other")) != 0 {
 		t.Fatal("deleted definition remained in index")
 	}
 }
@@ -161,14 +161,63 @@ func TestFieldEditKeepsIndependentAliasConsumerChecks(t *testing.T) {
 	defs := parseDocument("file:///tmp/local-change.tl2", "Size <=> uint32; Count <=> Size; Item = x:int32; Next = x:Item;", 1, true)
 	use := parseDocument("file:///tmp/alias-consumer.tl2", "Use = n:Count values:[n]int32 unknown:Missing;", 0, false)
 	s := editingServer(defs, use)
-	before := s.index.checks[use.uri]
+	before := s.index.checks.get(use.uri)
 	if len(before) != 1 {
 		t.Fatalf("missing control diagnostic: %+v", before)
 	}
-	s.docs[defs.uri] = parseDocument(defs.uri, "Size <=> uint32; Count <=> Size; Item = x:; Next = x:Item;", 2, true)
+	s.setDocument(defs.uri, parseDocument(defs.uri, "Size <=> uint32; Count <=> Size; Item = x:; Next = x:Item;", 2, true))
 	s.refreshIndex(false)
-	if after := s.index.checks[use.uri]; len(after) != 1 || &after[0] != &before[0] {
+	if after := s.index.checks.get(use.uri); len(after) != 1 || &after[0] != &before[0] {
 		t.Fatal("an unrelated declaration invalidated alias consumers")
+	}
+}
+
+func TestRelatedPositionsMoveWithoutSignatureChanges(t *testing.T) {
+	defs := parseDocument("file:///tmp/related-definitions.tl2", "Box<T:Type> = value:T;", 1, true)
+	use := parseDocument("file:///tmp/related-use.tl2", "Use = value:Box<int32,7>;", 1, true)
+	independent := parseDocument("file:///tmp/related-independent.tl2", "Other = value:Missing;", 1, true)
+	s := editingServer(defs, use, independent)
+	s.relatedDiagnostics = true
+	s.rebuildDefinitions()
+	old := s.index
+	before := old.checks.get(independent.uri)
+	if len(old.checks.get(use.uri)) != 1 || old.checks.get(use.uri)[0].Related == nil {
+		t.Fatal("missing related-range control diagnostic")
+	}
+	s.setDocument(defs.uri, parseDocument(defs.uri, "// 😀 moved\r\n"+defs.text, 2, true))
+	s.refreshIndex(false)
+	full := &server{docs: s.docs, relatedDiagnostics: true}
+	full.rebuildDefinitions()
+	full.rebuildSemanticDiagnostics()
+	if !reflect.DeepEqual(s.semantic, full.semantic) || s.semantic[use.uri][0].RelatedInformation[0].Location.Range.Start.Line != 1 {
+		t.Fatal("dependent diagnostics kept the old related position")
+	}
+	if after := s.index.checks.get(independent.uri); &after[0] != &before[0] {
+		t.Fatal("unrelated cached checks were recomputed")
+	}
+	if old.docs.get(defs.uri) != defs || old.checks.get(use.uri)[0].Related.Begin.Offset() != 0 {
+		t.Fatal("old related-position snapshot changed")
+	}
+}
+
+func TestRemovedAliasDependencyStopsInvalidation(t *testing.T) {
+	size := parseDocument("file:///tmp/dependency-size.tl2", "Size <=> uint32;", 1, true)
+	count := parseDocument("file:///tmp/dependency-count.tl2", "Count <=> Size;", 1, true)
+	use := parseDocument("file:///tmp/dependency-use.tl2", "Use = n:Count values:[n]int32 missing:Missing;", 1, true)
+	s := editingServer(size, count, use)
+	s.setDocument(count.uri, parseDocument(count.uri, "Count <=> uint32;", 2, true))
+	s.refreshIndex(false)
+	before := s.index.checks.get(use.uri)
+	if len(before) != 1 {
+		t.Fatal("missing independent diagnostic")
+	}
+	s.setDocument(size.uri, parseDocument(size.uri, "Size <=> string;", 2, true))
+	s.refreshIndex(false)
+	if after := s.index.checks.get(use.uri); len(after) != 1 || &after[0] != &before[0] {
+		t.Fatal("removed alias edge still invalidates its former consumers")
+	}
+	if len(s.index.aliasUsers.get("Size")) != 0 {
+		t.Fatal("removed alias edge remains in index")
 	}
 }
 
@@ -203,7 +252,7 @@ func TestWatcherUpdatesSelectedFilesAndPreservesOpenBuffers(t *testing.T) {
 		t.Fatal("watcher bypassed schemaPaths")
 	}
 	uri := uriFromPath(targetPath)
-	s.docs[uri] = parseDocument(uri, "Unsaved = x:int32;", 2, true)
+	s.setDocument(uri, parseDocument(uri, "Unsaved = x:int32;", 2, true))
 	s.refreshIndex(false)
 	old := s.index
 	watch(targetPath, 2)

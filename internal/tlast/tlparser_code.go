@@ -386,7 +386,8 @@ func parseScaleFactorOpt(tokens tokenIterator, outer Position) (*ScaleFactor, to
 // repeatType := [ scale '*' ] '[' field ... ']'
 func parseRepeatWithScaleOpt(tokens tokenIterator, outer Position) (*RepeatWithScale, tokenIterator, error) {
 	rest := tokens
-	res := RepeatWithScale{PR: rest.skipWS(outer)}
+	pr := rest.skipWS(outer)
+	var res *RepeatWithScale
 	var err error
 	var scale *ScaleFactor
 	scale, rest, err = parseScaleFactorOpt(rest, outer)
@@ -394,15 +395,16 @@ func parseRepeatWithScaleOpt(tokens tokenIterator, outer Position) (*RepeatWithS
 		return nil, tokens, fmt.Errorf("error parsing multiplier: %w", err)
 	}
 	if scale != nil {
-		res.Scale = *scale
 		if !rest.expect(asterisk) {
 			return nil, tokens, nil
 		}
-		res.ExplicitScale = true
 		if !rest.expect(lSquareBracket) {
 			return nil, tokens, parseErrToken(fmt.Errorf("'[' is expected after '*'"), rest.front(), outer)
 		}
-	} else if !rest.expect(lSquareBracket) {
+		res = &RepeatWithScale{PR: pr, Scale: *scale, ExplicitScale: true}
+	} else if rest.expect(lSquareBracket) {
+		res = &RepeatWithScale{PR: pr}
+	} else {
 		return nil, tokens, nil
 	}
 	// rBracketToken := rest.front()
@@ -414,24 +416,23 @@ func parseRepeatWithScaleOpt(tokens tokenIterator, outer Position) (*RepeatWithS
 	//	return RepeatWithScale{}, nil, parseErrToken(fmt.Errorf("empty square brackets not allowed: "), rBracketToken, outer)
 	// }
 	res.PR.End = rest.front().pos
-	return &res, rest, nil
+	return res, rest, nil
 }
 
 // fieldMask := word '.' number '?'
 func parseFieldMask(tokens tokenIterator, outer Position) (*FieldMask, tokenIterator, error) {
 	rest := tokens
-	res := &FieldMask{PRName: rest.skipWS(outer)}
+	prName := rest.skipWS(outer)
 	var name string
 	var err error
 	if name, rest, err = parseVarIdent(rest, outer); err != nil {
 		return nil, tokens, nil
 	}
-	res.MaskName = name
-	res.PRName.End = rest.front().pos
+	prName.End = rest.front().pos
 	if !rest.expect(dotSign) {
 		return nil, tokens, nil
 	}
-	res.PRBits = rest.skipWS(outer)
+	res := &FieldMask{MaskName: name, PRName: prName, PRBits: rest.skipWS(outer)}
 	if !rest.checkToken(number) {
 		return nil, tokens, parseErrToken(fmt.Errorf("expecting decimal bitmask bit number"), rest.front(), outer)
 	}
@@ -535,9 +536,40 @@ func parseFields(tokens tokenIterator, finishToken1 int, finishToken2 int, outer
 			field.NewlineRight = true
 			field.CommentRight = parseCommentRight(commentStart, rest)
 		}
+		if res == nil {
+			res = make([]Field, 0, remainingFieldCapacity(rest, finishToken1, finishToken2))
+		}
 		res = append(res, field)
 		commentStart = rest
 	}
+}
+
+// Include the field already parsed and count only top-level names. Nested
+// repetitions and type applications have their own AST arrays.
+func remainingFieldCapacity(tokens tokenIterator, finish1, finish2 int) int {
+	capacity, depth := 1, 0
+	for i, tok := range tokens.tokens[tokens.offset:] {
+		if i == 512 {
+			break
+		}
+		if tok.tokenType == eof || depth == 0 && (tok.tokenType == finish1 || tok.tokenType == finish2) {
+			break
+		}
+		switch tok.tokenType {
+		case lSquareBracket, lRoundBracket, lAngleBracket, lCurlyBracket:
+			depth++
+		case rSquareBracket, rRoundBracket, rAngleBracket, rCurlyBracket:
+			depth--
+		case colon:
+			if depth == 0 {
+				capacity++
+				if capacity == 64 {
+					return capacity
+				}
+			}
+		}
+	}
+	return capacity
 }
 
 // funcDecl := apply | '(' apply ')' | '%' T | fullName '<' aot ',' ... '>

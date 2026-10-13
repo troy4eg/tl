@@ -96,9 +96,9 @@ func (t *TL2FuncDeclaration) print(sb *strings.Builder, options formatOptions, p
 }
 
 func (t *TL2FuncDeclaration) printArguments(sb *strings.Builder, sep string) {
-	for _, argument := range t.Arguments {
+	for i := range t.Arguments {
 		sb.WriteString(sep)
-		argument.Print(sb)
+		t.Arguments[i].Print(sb)
 	}
 }
 
@@ -334,11 +334,11 @@ func (t *TL2TypeApplication) Print(sb *strings.Builder) {
 	sb.WriteString(t.Name.String())
 	if len(t.Arguments) > 0 {
 		sb.WriteString("<")
-		for i, argument := range t.Arguments {
+		for i := range t.Arguments {
 			if i != 0 {
 				sb.WriteString(",")
 			}
-			argument.Print(sb)
+			t.Arguments[i].Print(sb)
 		}
 		sb.WriteString(">")
 	}

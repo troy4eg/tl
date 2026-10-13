@@ -4,194 +4,222 @@ import (
 	"maps"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/VKCOM/tl/internal/tlast"
 )
 
+type globalBucket struct {
+	defs        []definition
+	fingerprint string
+	aliases     []string
+}
+
 // An index is immutable after publication. Requests retain their own generation
 // while the connection applies edits to a new one.
 type workspaceIndex struct {
-	docs         map[string]*document
-	ordered      []*document
-	byName       map[string][]definition
-	globals      map[string][]definition
-	refs         map[string]map[string][]reference
-	names        []string
+	docs         indexTable[*document]
+	byName       indexTable[[]definition]
+	globals      indexTable[*globalBucket]
+	refs         indexTable[map[string][]reference]
+	checks       indexTable[[]tlast.SemanticError]
+	aliasUsers   indexTable[map[string]bool]
+	relatedUsers indexTable[map[string]bool]
+	globalFiles  map[string]bool
 	validator    *tlast.SchemaIndex
-	checks       map[string][]tlast.SemanticError
-	fingerprints map[string]string
+
+	orderedOnce sync.Once
+	ordered     []*document
+}
+
+func (idx *workspaceIndex) documents() []*document {
+	idx.orderedOnce.Do(func() {
+		idx.ordered = make([]*document, 0, idx.docs.tree.Len())
+		idx.docs.each(func(_ string, d *document) { idx.ordered = append(idx.ordered, d) })
+	})
+	return idx.ordered
+}
+
+func (s *server) setDocument(uri string, d *document) {
+	if s.docs[uri] == d {
+		return
+	}
+	if s.dirtyDocuments == nil {
+		s.dirtyDocuments = map[string]bool{}
+	}
+	s.dirtyDocuments[uri] = true
+	if d == nil {
+		delete(s.docs, uri)
+	} else {
+		if s.docs == nil {
+			s.docs = map[string]*document{}
+		}
+		s.docs[uri] = d
+	}
 }
 
 func (s *server) refreshIndex(full bool) {
 	old := s.index
-	changed := map[string]bool{}
-	if old != nil && !full {
-		for uri, d := range old.docs {
-			if s.docs[uri] != d {
-				changed[uri] = true
-			}
-		}
-	}
-	for uri, d := range s.docs {
-		if full || old == nil || old.docs[uri] != d {
+	changed := s.dirtyDocuments
+	s.dirtyDocuments = nil
+	if old == nil || full {
+		changed = make(map[string]bool, len(s.docs))
+		for uri := range s.docs {
 			changed[uri] = true
 		}
 	}
-	if len(changed) == 0 && old != nil {
+	if len(changed) == 0 && old != nil && !full {
 		return
 	}
-	idx := &workspaceIndex{docs: maps.Clone(s.docs), byName: map[string][]definition{}, globals: map[string][]definition{}, refs: map[string]map[string][]reference{}, checks: map[string][]tlast.SemanticError{}, fingerprints: map[string]string{}}
-	if old != nil && !full {
-		idx.byName = maps.Clone(old.byName)
-		idx.globals = maps.Clone(old.globals)
-		idx.refs = maps.Clone(old.refs)
-		idx.checks = maps.Clone(old.checks)
-	}
-	for _, d := range s.docs {
-		idx.ordered = append(idx.ordered, d)
-	}
-	sort.Slice(idx.ordered, func(i, j int) bool { return idx.ordered[i].uri < idx.ordered[j].uri })
-	for uri := range changed {
-		if old != nil && !full {
-			if d := old.docs[uri]; d != nil {
-				for _, sym := range d.exported {
-					removeDefinition(idx.globals, sym.name, uri)
-					removeDefinition(idx.byName, sym.name, uri)
-				}
-				seenRefs := map[string]bool{}
-				for _, ref := range d.refs {
-					if seenRefs[ref.name] {
-						continue
-					}
-					seenRefs[ref.name] = true
-					if group := idx.refs[ref.name]; group != nil {
-						group = maps.Clone(group)
-						delete(group, uri)
-						if len(group) == 0 {
-							delete(idx.refs, ref.name)
-						} else {
-							idx.refs[ref.name] = group
-						}
-					}
-				}
-			}
-		}
-		delete(idx.checks, uri)
-		if d := s.docs[uri]; d != nil {
-			for _, sym := range d.exported {
-				idx.globals[sym.name] = appendClone(idx.globals[sym.name], definition{d, sym})
-				if sym.kind != 12 {
-					idx.byName[sym.name] = appendClone(idx.byName[sym.name], definition{d, sym})
-				}
-			}
-			grouped := map[string][]reference{}
-			for _, ref := range d.refs {
-				grouped[ref.name] = append(grouped[ref.name], ref)
-			}
-			for name, items := range grouped {
-				group := maps.Clone(idx.refs[name])
-				if group == nil {
-					group = map[string][]reference{}
-				}
-				group[uri] = items
-				idx.refs[name] = group
-			}
-		}
-	}
-	for name, defs := range idx.globals {
-		// Only changed buckets need sorting; never mutate an old generation's slice.
-		if len(defs) > 1 && !sort.SliceIsSorted(defs, func(i, j int) bool { return definitionLess(defs[i], defs[j]) }) {
-			defs = append([]definition(nil), defs...)
-			sort.Slice(defs, func(i, j int) bool { return definitionLess(defs[i], defs[j]) })
-			idx.globals[name] = defs
-		}
-		var signature strings.Builder
-		for _, def := range defs {
-			sym := def.sym
-			signature.WriteString(sym.globalKind)
-			if sym.incomplete {
-				signature.WriteString("?")
-			}
-			for _, p := range sym.params {
-				signature.WriteString("|" + p.name)
-				if p.nat {
-					signature.WriteByte('#')
-				} else {
-					signature.WriteByte('T')
-				}
-			}
-			if sym.alias != nil {
-				signature.WriteString("=" + sym.alias.String())
-			}
-			signature.WriteByte('\n')
-		}
-		idx.fingerprints[name] = signature.String()
-	}
-	for name, defs := range idx.byName {
-		if len(defs) > 1 {
-			idx.byName[name] = idx.globals[name]
-			idx.byName[name] = filterTypes(idx.byName[name])
-		}
-		idx.names = append(idx.names, name)
-	}
-	sort.Strings(idx.names)
+	idx := &workspaceIndex{globalFiles: map[string]bool{}}
 	if old == nil || full {
-		files := make(map[string]tlast.SchemaDeclarations, len(idx.ordered))
-		for _, d := range idx.ordered {
-			files[d.uri] = tlast.SchemaDeclarations{TL: d.tl, TL2: d.tl2}
+		idx.docs = newIndexTable[*document]()
+		idx.byName = newIndexTable[[]definition]()
+		idx.globals = newIndexTable[*globalBucket]()
+		idx.refs = newIndexTable[map[string][]reference]()
+		idx.checks = newIndexTable[[]tlast.SemanticError]()
+		idx.aliasUsers = newIndexTable[map[string]bool]()
+		idx.relatedUsers = newIndexTable[map[string]bool]()
+	} else {
+		idx.docs = old.docs.clone()
+		idx.byName = old.byName.clone()
+		idx.globals = old.globals.clone()
+		idx.refs = old.refs.clone()
+		idx.checks = old.checks.clone()
+		idx.aliasUsers = old.aliasUsers.clone()
+		idx.relatedUsers = old.relatedUsers.clone()
+	}
+	// Collect contributions once per changed document. A bucket is copied once,
+	// even when several changed files export or reference the same name.
+	removed := map[string]bool{}
+	names := map[string][]definition{}
+	references := map[string]map[string][]reference{}
+	for uri := range changed {
+		var previous *document
+		if old != nil && !full {
+			previous = old.docs.get(uri)
+		}
+		if previous == s.docs[uri] {
+			delete(changed, uri)
+			continue
+		}
+		removed[uri] = true
+		if previous != nil {
+			for _, sym := range previous.exported {
+				if _, ok := names[sym.name]; !ok {
+					names[sym.name] = nil
+				}
+			}
+			for _, ref := range previous.refs {
+				if references[ref.name] == nil {
+					references[ref.name] = map[string][]reference{}
+				}
+				references[ref.name][uri] = nil
+			}
+		}
+		if d := s.docs[uri]; d != nil {
+			idx.docs.set(uri, d)
+			for _, sym := range d.exported {
+				names[sym.name] = append(names[sym.name], definition{d, sym})
+			}
+			for _, ref := range d.refs {
+				if references[ref.name] == nil {
+					references[ref.name] = map[string][]reference{}
+				}
+				references[ref.name][uri] = append(references[ref.name][uri], ref)
+			}
+		} else {
+			idx.docs.delete(uri)
+		}
+	}
+	if len(changed) == 0 && old != nil && !full {
+		return
+	}
+	pending := []string{}
+	for name, added := range names {
+		previous := idx.globals.get(name)
+		defs := make([]definition, 0, len(added))
+		if previous != nil {
+			for _, def := range previous.defs {
+				if !removed[def.doc.uri] {
+					defs = append(defs, def)
+				}
+			}
+		}
+		defs = append(defs, added...)
+		sort.Slice(defs, func(i, j int) bool { return definitionLess(defs[i], defs[j]) })
+		bucket := &globalBucket{defs: defs, fingerprint: definitionFingerprint(defs)}
+		if previous == nil || bucket.fingerprint != previous.fingerprint {
+			pending = append(pending, name)
+			if previous != nil {
+				for _, dependency := range previous.aliases {
+					updateUsers(idx.aliasUsers, dependency, name, false)
+				}
+			}
+			bucket.aliases = aliasDependencies(defs)
+			for _, dependency := range bucket.aliases {
+				updateUsers(idx.aliasUsers, dependency, name, true)
+			}
+		} else {
+			bucket.aliases = previous.aliases
+		}
+		if len(defs) == 0 {
+			idx.globals.delete(name)
+		} else {
+			idx.globals.set(name, bucket)
+		}
+		if types := filterTypes(defs); len(types) > 0 {
+			idx.byName.set(name, types)
+		} else {
+			idx.byName.delete(name)
+		}
+	}
+	for name, updates := range references {
+		group := maps.Clone(idx.refs.get(name))
+		if group == nil {
+			group = map[string][]reference{}
+		}
+		for uri, refs := range updates {
+			if len(refs) == 0 {
+				delete(group, uri)
+			} else {
+				group[uri] = refs
+			}
+		}
+		if len(group) == 0 {
+			idx.refs.delete(name)
+		} else {
+			idx.refs.set(name, group)
+		}
+	}
+	updates := make(map[string]*tlast.SchemaDeclarations, len(changed))
+	for uri := range changed {
+		if d := s.docs[uri]; d != nil {
+			updates[uri] = &tlast.SchemaDeclarations{TL: d.tl, TL2: d.tl2}
+		} else {
+			updates[uri] = nil
+		}
+	}
+	if old == nil || full {
+		files := make(map[string]tlast.SchemaDeclarations, len(updates))
+		for uri, declarations := range updates {
+			if declarations != nil {
+				files[uri] = *declarations
+			}
 		}
 		idx.validator = tlast.NewSchemaIndex(files)
 	} else {
-		updates := make(map[string]*tlast.SchemaDeclarations, len(changed))
-		for uri := range changed {
-			if d := s.docs[uri]; d != nil {
-				updates[uri] = &tlast.SchemaDeclarations{TL: d.tl, TL2: d.tl2}
-			} else {
-				updates[uri] = nil
-			}
-		}
 		idx.validator = old.validator.WithDocuments(updates)
 	}
 	affected := maps.Clone(changed)
-	aliasUsers := map[string][]string{}
-	for _, defs := range idx.globals {
-		for _, def := range defs {
-			if def.sym.alias == nil {
-				continue
-			}
-			locals := map[string]bool{}
-			for _, p := range def.sym.params {
-				locals[p.name] = true
-			}
-			visitAliasNames(*def.sym.alias, func(name string) {
-				if !locals[name] {
-					aliasUsers[name] = append(aliasUsers[name], def.sym.name)
-				}
-			})
-		}
-	}
-	pending := []string{}
-	seen := map[string]bool{}
 	if old != nil && !full {
-		for name, signature := range idx.fingerprints {
-			if old.fingerprints[name] != signature {
-				pending = append(pending, name)
+		// Related ranges can move even when the declaration's signature does not.
+		for uri := range changed {
+			for consumer := range old.relatedUsers.get(uri) {
+				affected[consumer] = true
 			}
 		}
-		for name := range old.fingerprints {
-			if _, ok := idx.fingerprints[name]; !ok {
-				pending = append(pending, name)
-			}
-		}
-		// Related ranges can move even when a signature stays the same.
-		for uri, errors := range idx.checks {
-			for _, item := range errors {
-				if item.Related != nil && changed[uriFromPath(item.Related.Begin.FileName())] {
-					affected[uri] = true
-					break
-				}
-			}
-		}
+		seen := map[string]bool{}
 		for len(pending) > 0 {
 			name := pending[len(pending)-1]
 			pending = pending[:len(pending)-1]
@@ -199,33 +227,141 @@ func (s *server) refreshIndex(full bool) {
 				continue
 			}
 			seen[name] = true
-			for uri := range idx.refs[name] {
+			for uri := range idx.refs.get(name) {
 				affected[uri] = true
 			}
-			pending = append(pending, aliasUsers[name]...)
+			for alias := range idx.aliasUsers.get(name) {
+				pending = append(pending, alias)
+			}
 		}
 	}
 	for uri := range affected {
-		if d := s.docs[uri]; d != nil {
-			idx.checks[uri] = idx.validator.Validate(tlast.SchemaDeclarations{TL: d.tl, TL2: d.tl2})
+		for _, item := range idx.checks.get(uri) {
+			if item.Related != nil {
+				updateUsers(idx.relatedUsers, uriFromPath(item.Related.Begin.FileName()), uri, false)
+			}
 		}
+		idx.checks.delete(uri)
+		if d := s.docs[uri]; d != nil {
+			checks := idx.validator.Validate(tlast.SchemaDeclarations{TL: d.tl, TL2: d.tl2})
+			if len(checks) > 0 {
+				idx.checks.set(uri, checks)
+			}
+			for _, item := range checks {
+				if item.Related != nil {
+					updateUsers(idx.relatedUsers, uriFromPath(item.Related.Begin.FileName()), uri, true)
+				}
+			}
+		}
+	}
+	globalErrors := idx.validator.GlobalErrors()
+	for _, item := range globalErrors {
+		idx.globalFiles[uriFromPath(item.Pos.Begin.FileName())] = true
+	}
+	if old != nil && !full {
+		for uri := range old.globalFiles {
+			affected[uri] = true
+		}
+	}
+	for uri := range idx.globalFiles {
+		affected[uri] = true
 	}
 	s.generation++
 	s.index = idx
-	s.byName = idx.byName
-	s.semantic = map[string][]diagnostic{}
-	s.addSemanticDiagnostics(idx.validator.GlobalErrors())
-	for _, d := range idx.ordered {
-		s.addSemanticDiagnostics(idx.checks[d.uri])
+	s.byName = nil
+	if old == nil || full {
+		s.semantic = map[string][]diagnostic{}
+	} else {
+		s.semantic = maps.Clone(s.semantic)
+	}
+	for uri := range affected {
+		delete(s.semantic, uri)
+	}
+	s.addSemanticDiagnostics(globalErrors)
+	for uri := range affected {
+		s.addSemanticDiagnostics(idx.checks.get(uri))
+	}
+	if s.diagnosticChanges == nil {
+		s.diagnosticChanges = map[string]bool{}
+	}
+	for uri := range affected {
+		s.diagnosticChanges[uri] = true
+	}
+	if full && old != nil {
+		old.docs.each(func(uri string, _ *document) { s.diagnosticChanges[uri] = true })
 	}
 }
 
-func appendClone(defs []definition, def definition) []definition {
-	out := make([]definition, len(defs)+1)
-	copy(out, defs)
-	out[len(defs)] = def
-	return out
+func updateUsers(table indexTable[map[string]bool], name, user string, add bool) {
+	previous := table.get(name)
+	if previous[user] == add {
+		return
+	}
+	users := maps.Clone(previous)
+	if add {
+		if users == nil {
+			users = map[string]bool{}
+		}
+		users[user] = true
+	} else {
+		delete(users, user)
+	}
+	if len(users) == 0 {
+		table.delete(name)
+	} else {
+		table.set(name, users)
+	}
 }
+
+func definitionFingerprint(defs []definition) string {
+	var signature strings.Builder
+	for _, def := range defs {
+		sym := def.sym
+		signature.WriteString(sym.globalKind)
+		if sym.incomplete {
+			signature.WriteString("?")
+		}
+		for _, p := range sym.params {
+			signature.WriteByte('|')
+			signature.WriteString(p.name)
+			if p.nat {
+				signature.WriteByte('#')
+			} else {
+				signature.WriteByte('T')
+			}
+		}
+		if sym.alias != nil {
+			signature.WriteByte('=')
+			sym.alias.Print(&signature)
+		}
+		signature.WriteByte('\n')
+	}
+	return signature.String()
+}
+
+func aliasDependencies(defs []definition) []string {
+	seen := map[string]bool{}
+	for _, def := range defs {
+		if def.sym.alias == nil {
+			continue
+		}
+		locals := map[string]bool{}
+		for _, p := range def.sym.params {
+			locals[p.name] = true
+		}
+		visitAliasNames(def.sym.alias, func(name string) {
+			if !locals[name] {
+				seen[name] = true
+			}
+		})
+	}
+	dependencies := make([]string, 0, len(seen))
+	for name := range seen {
+		dependencies = append(dependencies, name)
+	}
+	return dependencies
+}
+
 func definitionLess(a, b definition) bool {
 	return a.doc.uri < b.doc.uri || a.doc.uri == b.doc.uri && a.sym.nameBegin < b.sym.nameBegin
 }
@@ -237,20 +373,6 @@ func filterTypes(defs []definition) []definition {
 		}
 	}
 	return out
-}
-func removeDefinition(index map[string][]definition, name, uri string) {
-	defs := index[name]
-	out := make([]definition, 0, len(defs))
-	for _, def := range defs {
-		if def.doc.uri != uri {
-			out = append(out, def)
-		}
-	}
-	if len(out) == 0 {
-		delete(index, name)
-	} else {
-		index[name] = out
-	}
 }
 
 // Navigation-only candidates avoid semantic validation when checking name binding.
@@ -265,18 +387,19 @@ func (s *server) rebuildNavigation() {
 	}
 }
 
-func visitAliasNames(ref tlast.TL2TypeRef, visit func(string)) {
+func visitAliasNames(ref *tlast.TL2TypeRef, visit func(string)) {
 	if br := ref.BracketType; br != nil {
 		if br.HasIndex && !br.IndexType.IsNumber {
-			visitAliasNames(br.IndexType.Type, visit)
+			visitAliasNames(&br.IndexType.Type, visit)
 		}
-		visitAliasNames(br.ArrayType, visit)
+		visitAliasNames(&br.ArrayType, visit)
 		return
 	}
 	visit(ref.SomeType.Name.String())
-	for _, arg := range ref.SomeType.Arguments {
+	for i := range ref.SomeType.Arguments {
+		arg := &ref.SomeType.Arguments[i]
 		if !arg.IsNumber {
-			visitAliasNames(arg.Type, visit)
+			visitAliasNames(&arg.Type, visit)
 		}
 	}
 }

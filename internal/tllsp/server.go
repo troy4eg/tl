@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -20,12 +21,14 @@ type options struct {
 }
 
 type server struct {
-	ctx             context.Context
-	generation      uint64
-	deferChanges    bool
-	pendingChanges  map[string]*document
-	index           *workspaceIndex
-	lastDiagnostics map[string]diagnosticState
+	ctx               context.Context
+	generation        uint64
+	deferChanges      bool
+	pendingChanges    map[string]*document
+	index             *workspaceIndex
+	lastDiagnostics   map[string]diagnosticState
+	dirtyDocuments    map[string]bool
+	diagnosticChanges map[string]bool
 
 	out                   io.Writer
 	log                   *log.Logger
@@ -253,7 +256,7 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 		return nil, nil
 	}
 	sym := defs[0].sym
-	value := sym.signature
+	value := sym.detail()
 	if sym.comment != "" {
 		value += "\n\n" + sym.comment
 	}
@@ -267,31 +270,50 @@ type diagnosticState struct {
 }
 
 func (s *server) publishDiagnostics() error {
+	changed := s.diagnosticChanges
+	if s.lastDiagnostics == nil {
+		changed = make(map[string]bool, len(s.docs)+len(s.published))
+		for uri := range s.docs {
+			changed[uri] = true
+		}
+		for uri := range s.published {
+			changed[uri] = true
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
 	s.lastDiagnostics = maps.Clone(s.lastDiagnostics)
 	if s.lastDiagnostics == nil {
 		s.lastDiagnostics = map[string]diagnosticState{}
 	}
-
 	if s.published == nil {
 		s.published = map[string]bool{}
 	}
-	// Clear removed files and documents which leave the configured schema.
-	for uri := range s.published {
-		if s.docs[uri] == nil {
+	uris := make([]string, 0, len(changed))
+	for uri := range changed {
+		uris = append(uris, uri)
+	}
+	sort.Strings(uris)
+	for _, uri := range uris {
+		d := s.docs[uri]
+		if d == nil {
+			if !s.published[uri] {
+				continue
+			}
 			if err := writeMessage(s.out, map[string]any{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": map[string]any{"uri": uri, "diagnostics": []diagnostic{}}}); err != nil {
 				return err
 			}
 			delete(s.published, uri)
 			delete(s.lastDiagnostics, uri)
-		}
-	}
-	for _, d := range s.documents() {
-		diagnostics := s.diagnostics(d)
-		state := diagnosticState{d.version, d.open, diagnostics}
-		if previous, ok := s.lastDiagnostics[d.uri]; ok && previous.version == state.version && previous.open == state.open && equalDiagnostics(previous.diagnostics, state.diagnostics) {
 			continue
 		}
-		params := map[string]any{"uri": d.uri, "diagnostics": diagnostics}
+		diagnostics := s.diagnostics(d)
+		state := diagnosticState{d.version, d.open, diagnostics}
+		if previous, ok := s.lastDiagnostics[uri]; ok && previous.version == state.version && previous.open == state.open && equalDiagnostics(previous.diagnostics, state.diagnostics) {
+			continue
+		}
+		params := map[string]any{"uri": uri, "diagnostics": diagnostics}
 		if d.open {
 			params["version"] = d.version
 		}
@@ -301,9 +323,10 @@ func (s *server) publishDiagnostics() error {
 		}); err != nil {
 			return err
 		}
-		s.published[d.uri] = true
-		s.lastDiagnostics[d.uri] = state
+		s.published[uri] = true
+		s.lastDiagnostics[uri] = state
 	}
+	s.diagnosticChanges = nil
 	return nil
 }
 
@@ -342,7 +365,7 @@ func (s *server) notification(method string, raw json.RawMessage) error {
 		}
 		if err = decodeParams(raw, &p); err == nil {
 			uri := canonicalURI(p.TextDocument.URI)
-			s.docs[uri] = parseDocumentLanguage(uri, p.TextDocument.Text, p.TextDocument.Version, true, p.TextDocument.Language)
+			s.setDocument(uri, parseDocumentLanguage(uri, p.TextDocument.Text, p.TextDocument.Version, true, p.TextDocument.Language))
 		}
 	case "textDocument/didChange":
 		if err = s.changeDocument(raw); err == nil && s.deferChanges {
@@ -356,7 +379,7 @@ func (s *server) notification(method string, raw json.RawMessage) error {
 		}
 		if err = decodeParams(raw, &p); err == nil {
 			uri := canonicalURI(p.TextDocument.URI)
-			delete(s.docs, uri)
+			s.setDocument(uri, nil)
 			s.refreshDiskDocument(uri)
 		}
 	case "textDocument/didSave":

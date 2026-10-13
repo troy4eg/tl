@@ -47,7 +47,7 @@ func (s *server) changeDocument(raw json.RawMessage) *rpcError {
 		}
 		s.pendingChanges[uri] = &document{uri: uri, language: d.language, source: newSource(text), version: p.TextDocument.Version, open: true}
 	} else {
-		s.docs[uri] = parseDocumentLanguage(uri, text, p.TextDocument.Version, true, d.language)
+		s.setDocument(uri, parseDocumentLanguage(uri, text, p.TextDocument.Version, true, d.language))
 	}
 	return nil
 }
@@ -57,7 +57,7 @@ func (s *server) flushChanges() error {
 		return nil
 	}
 	for uri, d := range s.pendingChanges {
-		s.docs[uri] = parseDocumentLanguage(uri, d.text, d.version, true, d.language)
+		s.setDocument(uri, parseDocumentLanguage(uri, d.text, d.version, true, d.language))
 	}
 	s.pendingChanges = nil
 	s.refreshIndex(false)

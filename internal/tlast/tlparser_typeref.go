@@ -116,16 +116,16 @@ func parseTypeRefInRoundBracketsOpt(tokens tokenIterator, outer Position) (*Type
 // returns nil, nil if fullName or < not found after fullName
 // returns &t , nil if parsed
 func parseTypeRefWithAngleBracketsOpt(tokens tokenIterator, outer Position) (*TypeRef, tokenIterator, error) {
-	var res TypeRef
+	var name Name
 	rest := tokens
 	var err error
-	if res.Type, rest, err = parseTypeRefAsName(rest, outer); err != nil {
+	if name, rest, err = parseTypeRefAsName(rest, outer); err != nil {
 		return nil, tokens, nil
 	}
 	if !rest.expect(lAngleBracket) {
 		return nil, tokens, nil
 	}
-	res.PRArgs = rest.skipWS(outer)
+	res := &TypeRef{Type: name, PRArgs: rest.skipWS(outer), Args: make([]ArithmeticOrType, 0, typeArgumentCapacity(rest))}
 	for {
 		var aot *ArithmeticOrType
 		aot, rest, err = parseArithmeticOrTypeOpt(rest, true, outer)
@@ -145,7 +145,7 @@ func parseTypeRefWithAngleBracketsOpt(tokens tokenIterator, outer Position) (*Ty
 		}
 		break
 	}
-	return &res, rest, nil
+	return res, rest, nil
 }
 
 func parseTypeRefAsName(tokens tokenIterator, outer Position) (Name, tokenIterator, error) {
@@ -172,4 +172,32 @@ func parseTypeRefAsName(tokens tokenIterator, outer Position) (Name, tokenIterat
 		return res, rest, nil
 	}
 	return Name{}, tokens, parseErrToken(fmt.Errorf("name (with optional namespace) expected"), rest.front(), outer)
+}
+
+// Called just after '<'. Reserve only top-level arguments and bound lookahead
+// for incomplete input; commas inside nested applications are independent.
+func typeArgumentCapacity(tokens tokenIterator) int {
+	capacity, depth := 1, 0
+	for i, tok := range tokens.tokens[tokens.offset:] {
+		if i == 512 {
+			break
+		}
+		if tok.tokenType == eof || tok.tokenType == semiColon || depth == 0 && tok.tokenType == rAngleBracket {
+			break
+		}
+		switch tok.tokenType {
+		case lAngleBracket, lSquareBracket, lRoundBracket:
+			depth++
+		case rAngleBracket, rSquareBracket, rRoundBracket:
+			depth--
+		case commaSign:
+			if depth == 0 {
+				capacity++
+				if capacity == 64 {
+					return capacity
+				}
+			}
+		}
+	}
+	return capacity
 }

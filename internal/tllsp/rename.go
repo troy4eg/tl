@@ -41,7 +41,10 @@ func (s *server) targetAt(d *document, offset int) renameTarget {
 	}
 	first := defs[0].sym
 	if first.globalKind != "" && s.index != nil {
-		return renameTarget{s.index.globals[first.name], r}
+		if bucket := s.index.globals.get(first.name); bucket != nil {
+			return renameTarget{bucket.defs, r}
+		}
+		return renameTarget{span: r}
 	}
 	if first.globalKind != "" {
 		defs = nil
@@ -108,7 +111,7 @@ func (s *server) occurrences(target renameTarget, includeDeclaration bool) []occ
 		}
 	}
 	if s.index != nil {
-		for uri, refs := range s.index.refs[first.sym.name] {
+		for uri, refs := range s.index.refs.get(first.sym.name) {
 			if first.sym.globalKind != "" || uri == first.doc.uri {
 				addRefs(s.docs[uri], refs)
 			}

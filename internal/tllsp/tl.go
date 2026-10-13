@@ -96,20 +96,21 @@ func (d *document) addTLRef(ref tlast.TypeRef, locals map[string]*symbol) {
 
 func (d *document) addTLFields(parent *symbol, fields []tlast.Field, locals map[string]*symbol) {
 	children := make([]*symbol, len(fields))
-	for i, f := range fields {
+	for i := range fields {
+		f := &fields[i]
 		if f.FieldName == "" {
 			continue
 		}
 		b, e := d.parserRange(f.PR)
 		nb, ne := d.parserRange(f.PRName)
 		child := &symbol{name: f.FieldName, kind: 8, scope: parent, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: strings.TrimSpace(d.text[b:e]), comment: cleanComment(f.CommentBefore)}
-		typ := tlast.TL1TypeRef(f.FieldType)
-		child.valueType, child.optional = &typ, f.Mask != nil || f.Excl || f.IsRepeated || strings.HasPrefix(f.FieldName, "_")
+		child.legacyType, child.optional = &f.FieldType, f.Mask != nil || f.Excl || f.IsRepeated || strings.HasPrefix(f.FieldName, "_")
 		locals[f.FieldName] = child
 		children[i] = child
 		parent.children = append(parent.children, child)
 	}
-	for i, f := range fields {
+	for i := range fields {
+		f := &fields[i]
 		if f.Mask != nil {
 			d.addTLNameRef(f.Mask.MaskName, f.Mask.PRName, locals)
 		}

@@ -24,6 +24,11 @@ func editorLex(text, file string, opts LexerOptions) (*lexer, []*ParseError) {
 				errs = append(errs, pe)
 			}
 		}
+		if lex.tokens[len(lex.tokens)-1].tokenType == semiColon {
+			// Bound each declaration with its own EOF in the shared token array.
+			// Parsing/recovery can then retain slices instead of copying tokens.
+			lex.advance(0, eof)
+		}
 	}
 	lex.advance(0, eof)
 	return &lex, errs
@@ -84,20 +89,28 @@ func editorChunks(tokens []token) [][]token {
 	var result [][]token
 	start := 0
 	for i, tok := range tokens {
-		if tok.tokenType != semiColon && tok.tokenType != eof {
-			continue
+		if tok.tokenType == eof {
+			result = append(result, tokens[start:i+1:i+1])
+			start = i + 1
 		}
-		chunk := append([]token(nil), tokens[start:i+1]...)
-		start = i + 1
-		if tok.tokenType != eof {
-			pos := tok.pos
-			pos.offset += len(tok.val)
-			pos.column += len(tok.val)
-			chunk = append(chunk, token{tokenType: eof, pos: pos})
-		}
-		result = append(result, chunk)
 	}
 	return result
+}
+
+func editorDeclarationCapacity(chunks [][]token) int {
+	count := 0
+	for _, chunk := range chunks {
+		for _, tok := range chunk {
+			if editorTrivia(tok) || tok.tokenType == typesSection || tok.tokenType == functionsSection {
+				continue
+			}
+			if editorName(tok) || tok.tokenType == annotation {
+				count++
+			}
+			break
+		}
+	}
+	return count
 }
 
 func editorResyncChunks(tokens []token, tl2 bool) [][]token {
@@ -105,7 +118,8 @@ func editorResyncChunks(tokens []token, tl2 bool) [][]token {
 	start, lastSignificant := 0, -1
 	started, lineStart := false, true
 	appendChunk := func(end int, pos Position) {
-		chunk := append([]token(nil), tokens[start:end]...)
+		chunk := make([]token, end-start, end-start+1)
+		copy(chunk, tokens[start:end])
 		if len(chunk) == 0 || chunk[len(chunk)-1].tokenType != eof {
 			chunk = append(chunk, token{tokenType: eof, pos: pos})
 		}
@@ -178,6 +192,8 @@ func ParseTL2FileEditing(text, file string) EditorParse[TL2Combinator] {
 	lex, errs := editorLex(text, file, opts)
 	result := EditorParse[TL2Combinator]{Errors: errs}
 	chunks := editorChunks(lex.tokens)
+	result.Declarations = make([]TL2Combinator, 0, editorDeclarationCapacity(chunks))
+	result.Incomplete = make([]bool, 0, cap(result.Declarations))
 	for index := 0; index < len(chunks); index++ {
 		tokens := chunks[index]
 		it := tokenIterator{tokens: tokens}
@@ -384,6 +400,8 @@ func ParseTLFileEditing(text, file string) EditorParse[*Combinator] {
 	result := EditorParse[*Combinator]{Errors: errs}
 	functionSection := false
 	chunks := editorChunks(lex.tokens)
+	result.Declarations = make([]*Combinator, 0, editorDeclarationCapacity(chunks))
+	result.Incomplete = make([]bool, 0, cap(result.Declarations))
 	for index := 0; index < len(chunks); index++ {
 		tokens := chunks[index]
 		it := tokenIterator{tokens: tokens}

@@ -237,7 +237,7 @@ func (d *document) assistance(offset int, completion bool) assistance {
 			a.mask = false
 		}
 		if dot := strings.LastIndex(a.prefix, "."); dot >= 0 {
-			if local := a.locals[a.prefix[:dot]]; local != nil && (local.kind == 26 && local.nat || !local.optional && local.nameBegin < a.fieldBegin && local.valueType != nil && local.valueType.SomeType.Name.String() == "#") {
+			if local := a.locals[a.prefix[:dot]]; local != nil && (local.kind == 26 && local.nat || !local.optional && local.nameBegin < a.fieldBegin && local.legacyType != nil && local.legacyType.Type.String() == "#") {
 				a.kind = "mask-bit"
 				a.begin += dot + 1
 				a.prefix = a.prefix[dot+1:]
