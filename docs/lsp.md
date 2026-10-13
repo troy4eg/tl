@@ -28,7 +28,10 @@ For repeatable performance measurements, run `make bench-lsp`.
 The server reuses unchanged parsed files and checks changed documents plus their
 semantic dependents. Save/close/watcher events update the indicated file; startup
 and schema/workspace configuration changes scan the configured paths. Global
-signature and CRC checks are retained, including diagnostics for closed files.
+type signatures and constructor tags are indexed per document: edits replace the
+changed file's contributions and recheck only affected name/tag groups, including
+conflicts with declarations in closed files. Background requests retain an
+immutable registry snapshot while later edits publish a new one.
 Unchanged diagnostics are skipped, while diagnostics for open buffers retain
 their document version.
 

@@ -2,6 +2,7 @@ package tllsp
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -205,6 +206,30 @@ func TestQuickFixRangeContextAndVersions(t *testing.T) {
 	s.options.Diagnostics.UnknownTypes = "off"
 	if actions := allActions(s, d); len(actions) != 0 {
 		t.Fatal("fix offered for disabled diagnostic")
+	}
+}
+
+func TestTypeQuickFixPreservesConstructorTagChecks(t *testing.T) {
+	d := parseDocument("file:///tmp/z-crc-fix.tl", "use value:Itme = Use;", 1, true)
+	defs := parseDocument("file:///tmp/types-crc-fix.tl", "item id:int = Item;", 0, false)
+	fixed := parseDocument(d.uri, "use value:Item = Use;", 1, true)
+	collision := parseDocument("file:///tmp/a-crc-fix.tl", fmt.Sprintf("other#%08x = Other;", fixed.tl[0].Crc32()), 0, false)
+	s := editingServer(d, defs, collision)
+	before := s.index.validator
+	for _, action := range allActions(s, d) {
+		if actionEdits(t, d, action)[0].NewText == "Item" {
+			t.Fatalf("fix introduced an implicit CRC collision: %+v", action)
+		}
+	}
+	if s.index.validator != before || len(before.GlobalErrors()) != 0 {
+		t.Fatal("candidate validation changed the published tag registry")
+	}
+	found := false
+	for _, action := range allActions(editingServer(d, defs), d) {
+		found = found || actionEdits(t, d, action)[0].NewText == "Item"
+	}
+	if !found {
+		t.Fatal("noncolliding fix disappeared")
 	}
 }
 

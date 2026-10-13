@@ -27,6 +27,7 @@ func TestIncrementalDiagnosticsMatchFullValidation(t *testing.T) {
 		t.Helper()
 		full := &server{docs: s.docs, relatedDiagnostics: true}
 		full.rebuildDefinitions()
+		full.rebuildSemanticDiagnostics()
 		if !reflect.DeepEqual(s.semantic, full.semantic) {
 			t.Fatalf("incremental diagnostics differ\nincremental: %+v\nfull: %+v", s.semantic, full.semantic)
 		}

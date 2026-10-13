@@ -17,7 +17,7 @@ type workspaceIndex struct {
 	globals      map[string][]definition
 	refs         map[string]map[string][]reference
 	names        []string
-	validator    *tlast.SchemaValidator
+	validator    *tlast.SchemaIndex
 	checks       map[string][]tlast.SemanticError
 	fingerprints map[string]string
 }
@@ -135,11 +135,23 @@ func (s *server) refreshIndex(full bool) {
 		idx.names = append(idx.names, name)
 	}
 	sort.Strings(idx.names)
-	files := make([]tlast.SchemaDeclarations, 0, len(idx.ordered))
-	for _, d := range idx.ordered {
-		files = append(files, tlast.SchemaDeclarations{TL: d.tl, TL2: d.tl2})
+	if old == nil || full {
+		files := make(map[string]tlast.SchemaDeclarations, len(idx.ordered))
+		for _, d := range idx.ordered {
+			files[d.uri] = tlast.SchemaDeclarations{TL: d.tl, TL2: d.tl2}
+		}
+		idx.validator = tlast.NewSchemaIndex(files)
+	} else {
+		updates := make(map[string]*tlast.SchemaDeclarations, len(changed))
+		for uri := range changed {
+			if d := s.docs[uri]; d != nil {
+				updates[uri] = &tlast.SchemaDeclarations{TL: d.tl, TL2: d.tl2}
+			} else {
+				updates[uri] = nil
+			}
+		}
+		idx.validator = old.validator.WithDocuments(updates)
 	}
-	idx.validator = tlast.NewSchemaValidator(files)
 	affected := maps.Clone(changed)
 	aliasUsers := map[string][]string{}
 	for _, defs := range idx.globals {

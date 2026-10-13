@@ -53,8 +53,16 @@ type semanticLocal struct {
 
 type semanticChecker struct {
 	types  map[string]*semanticType
+	index  *SchemaIndex
 	errors []SemanticError
 	tl1    bool
+}
+
+func (c *semanticChecker) typeByName(name string) *semanticType {
+	if c.index != nil {
+		return c.index.typeByName(name)
+	}
+	return c.types[name]
 }
 
 func (c *semanticChecker) report(code string, pr PositionRange, related *PositionRange, format string, args ...any) {
@@ -130,7 +138,8 @@ func NewSchemaValidator(files []SchemaDeclarations) *SchemaValidator {
 		}
 	}
 	for _, file := range files {
-		for _, a := range file.TL2 {
+		for i := range file.TL2 {
+			a := &file.TL2[i]
 			t := &semanticType{name: a.ReferenceName().String(), pr: a.ReferenceNamePR(), params: a.TypeDecl.TemplateArguments, function: a.IsFunction}
 			if !a.IsFunction && a.TypeDecl.Type.IsAlias() {
 				t.alias = &a.TypeDecl.Type.TypeAlias
@@ -144,6 +153,10 @@ func NewSchemaValidator(files []SchemaDeclarations) *SchemaValidator {
 
 func (v *SchemaValidator) Validate(file SchemaDeclarations) []SemanticError {
 	c := &semanticChecker{types: v.types}
+	return c.validate(file)
+}
+
+func (c *semanticChecker) validate(file SchemaDeclarations) []SemanticError {
 	for _, a := range file.TL {
 		c.tl1 = true
 		locals := c.templates(tl1Params(a.TemplateArguments))
@@ -408,7 +421,7 @@ func (c *semanticChecker) typeCategory(tr TL2TypeRef, locals map[string]semantic
 	local, localFound := locals[name]
 	// Only earlier fields shadow global types. Keep future field names for
 	// precise dependency diagnostics when no global type has that name.
-	if localFound && local.field && !local.ready && (c.types[name] != nil || semanticBuiltin(name, c.tl1)) {
+	if localFound && local.field && !local.ready && (c.typeByName(name) != nil || semanticBuiltin(name, c.tl1)) {
 		localFound = false
 	}
 	if localFound {
@@ -423,7 +436,7 @@ func (c *semanticChecker) typeCategory(tr TL2TypeRef, locals map[string]semantic
 		cats = append(cats, cat)
 		known = append(known, ok)
 	}
-	t := c.types[name]
+	t := c.typeByName(name)
 	if t == nil && semanticBuiltin(name, c.tl1) {
 		t = &semanticType{name: name}
 	}
@@ -461,7 +474,7 @@ func (c *semanticChecker) primitive(tr TL2TypeRef, substitutions map[string]TL2T
 	}
 	app := tr.SomeType
 	name := app.Name.String()
-	t := c.types[name]
+	t := c.typeByName(name)
 	if t == nil && (semanticBuiltin(name, true) || semanticBuiltin(name, false)) {
 		return name, true
 	}

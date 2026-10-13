@@ -238,11 +238,9 @@ func (s *server) validTypeFix(d *document, target diagnostic, edit textEdit, beg
 	candidate.rebuildNavigation()
 	candidate.semantic = map[string][]diagnostic{}
 	if s.index != nil {
-		files := make([]tlast.SchemaDeclarations, 0, len(candidate.docs))
-		for _, doc := range candidate.documents() {
-			files = append(files, tlast.SchemaDeclarations{TL: doc.tl, TL2: doc.tl2})
-		}
-		validator := tlast.NewSchemaValidator(files)
+		validator := s.index.validator.WithDocuments(map[string]*tlast.SchemaDeclarations{
+			d.uri: {TL: updated.tl, TL2: updated.tl2},
+		})
 		candidate.addSemanticDiagnostics(validator.GlobalErrors())
 		candidate.addSemanticDiagnostics(validator.Validate(tlast.SchemaDeclarations{TL: updated.tl, TL2: updated.tl2}))
 	} else {
