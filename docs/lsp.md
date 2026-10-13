@@ -227,9 +227,11 @@ compatibility checks remain outside the editor's semantic pass. Ambiguous global
 definitions return all matching locations. Configure schema boundaries to avoid
 unrelated declarations with the same name.
 
-Formatting, code actions and incremental semantic compilation are not
-implemented. File notifications rebuild the disk index;
-large-workspace performance has not been benchmarked.
+Quick fixes are available through LSP code actions; see [Quick fixes](#quick-fixes).
+
+Formatting and declaration-level incremental parsing are not implemented.
+Changed files are still lexed and parsed in full. File notifications update the
+affected index entries and dependent diagnostics, reusing unchanged documents.
 
 ## References and rename
 
