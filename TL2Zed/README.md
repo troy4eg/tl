@@ -59,6 +59,46 @@ Use **editor: toggle code actions** on an error to see quick fixes for type-name
 typos, legacy primitive names in TL2 and missing semicolons. See
 [quick fix rules](../docs/lsp.md#quick-fixes) for their scope.
 
+## Highlighting
+
+Zed disables semantic tokens by default. If navigation works but TL/TL2 files
+have no colors, enable them for both languages in your user settings
+(**zed: open settings file**):
+
+```json
+{
+  "languages": {
+    "TL": { "semantic_tokens": "full" },
+    "TL2": { "semantic_tokens": "full" }
+  }
+}
+```
+
+Merge these entries into an existing `languages` object. Then run
+**editor: restart language server** for the open schema. Reinstalling or rebuilding
+the extension is unnecessary for this settings change. The `full` mode uses
+the server's tokens for types, fields, variants, functions, comments, numbers,
+operators and annotations. See [Zed's semantic token settings](https://zed.dev/docs/semantic-tokens).
+
+The extension provides the following mappings to the current theme:
+
+| Schema token | Theme style |
+| --- | --- |
+| Field names and field references | `variable` |
+| Type names | `type` |
+| CRC tags such as `#deadbeef` and numeric literals | `number` |
+| Annotations such as `@read` and `@internal` | `keyword` |
+
+This makes fields distinct from types in themes such as Ayu, whose default
+`property` and `type` colors are nearly identical. CRC tags and annotations also
+have explicit styles. Colors follow the current theme; the extension does not
+hardcode a palette. These defaults are in each language's
+`semantic_token_rules.json`.
+
+After updating those rules in an installed dev extension, run
+**zed: reload extensions** to reload the language configuration, then
+**editor: restart language server** for the open schema.
+
 ## Build verification
 
 ```sh

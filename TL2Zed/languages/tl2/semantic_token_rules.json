@@ -1,0 +1,14 @@
+[
+  {
+    "token_type": "property",
+    "style": ["variable", "property"]
+  },
+  {
+    "token_type": "number",
+    "style": ["number", "constant"]
+  },
+  {
+    "token_type": "decorator",
+    "style": ["keyword", "attribute"]
+  }
+]
