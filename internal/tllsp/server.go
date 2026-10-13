@@ -32,6 +32,8 @@ type server struct {
 	semantic              map[string][]diagnostic
 	published             map[string]bool
 	relatedDiagnostics    bool
+	snippetSupport        bool
+	codeActionLiterals    bool
 }
 
 // Run serves one LSP connection. Only protocol messages are written to out;
@@ -118,6 +120,14 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 					} `json:"didChangeWatchedFiles"`
 				} `json:"workspace"`
 				TextDocument struct {
+					CodeAction struct {
+						LiteralSupport *json.RawMessage `json:"codeActionLiteralSupport"`
+					} `json:"codeAction"`
+					Completion struct {
+						CompletionItem struct {
+							SnippetSupport bool `json:"snippetSupport"`
+						} `json:"completionItem"`
+					} `json:"completion"`
 					PublishDiagnostics struct {
 						RelatedInformation bool `json:"relatedInformation"`
 					} `json:"publishDiagnostics"`
@@ -148,17 +158,25 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 		s.dynamicWatchers = p.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration
 		s.documentChanges = p.Capabilities.Workspace.WorkspaceEdit.DocumentChanges
 		s.relatedDiagnostics = p.Capabilities.TextDocument.PublishDiagnostics.RelatedInformation
+		s.snippetSupport = p.Capabilities.TextDocument.Completion.CompletionItem.SnippetSupport
+		s.codeActionLiterals = p.Capabilities.TextDocument.CodeAction.LiteralSupport != nil
+		var codeActionProvider any = false
+		if s.codeActionLiterals {
+			codeActionProvider = map[string]any{"codeActionKinds": []string{"quickfix"}}
+		}
 		s.reindex()
 		s.initialized = true
 		return map[string]any{
-			"serverInfo": map[string]any{"name": "tl2lsp", "version": "0.5.0"},
+			"serverInfo": map[string]any{"name": "tl2lsp", "version": "0.6.0"},
 			"capabilities": map[string]any{
 				"positionEncoding":   "utf-16",
 				"textDocumentSync":   map[string]any{"openClose": true, "change": 2, "save": map[string]any{"includeText": false}},
 				"definitionProvider": true, "hoverProvider": true, "documentSymbolProvider": true,
 				"referencesProvider": true, "renameProvider": map[string]any{"prepareProvider": true},
 				"workspaceSymbolProvider": true,
-				"completionProvider":      map[string]any{"triggerCharacters": []string{".", ":", "<", "["}},
+				"completionProvider":      map[string]any{"triggerCharacters": []string{".", ":", "<", "[", ",", "?", "%"}},
+				"signatureHelpProvider":   map[string]any{"triggerCharacters": []string{"<", ",", "(", " "}, "retriggerCharacters": []string{">", ")", "]"}},
+				"codeActionProvider":      codeActionProvider,
 				"semanticTokensProvider":  map[string]any{"legend": map[string]any{"tokenTypes": tokenTypes, "tokenModifiers": []string{}}, "full": true},
 				"workspace":               map[string]any{"workspaceFolders": map[string]any{"supported": true, "changeNotifications": true}},
 			},
@@ -192,7 +210,7 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 		return out, nil
 	}
 	switch method {
-	case "textDocument/definition", "textDocument/hover", "textDocument/completion", "textDocument/documentSymbol", "textDocument/semanticTokens/full", "textDocument/references", "textDocument/prepareRename", "textDocument/rename":
+	case "textDocument/definition", "textDocument/hover", "textDocument/completion", "textDocument/signatureHelp", "textDocument/codeAction", "textDocument/documentSymbol", "textDocument/semanticTokens/full", "textDocument/references", "textDocument/prepareRename", "textDocument/rename":
 	default:
 		return nil, &rpcError{-32601, "method not found: " + method}
 	}
@@ -201,8 +219,11 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 			URI string `json:"uri"`
 		} `json:"textDocument"`
 		Position position `json:"position"`
+		Range    span     `json:"range"`
 		Context  struct {
-			IncludeDeclaration bool `json:"includeDeclaration"`
+			IncludeDeclaration bool         `json:"includeDeclaration"`
+			Diagnostics        []diagnostic `json:"diagnostics"`
+			Only               []string     `json:"only"`
 		} `json:"context"`
 		NewName string `json:"newName"`
 	}
@@ -219,12 +240,29 @@ func (s *server) request(method string, raw json.RawMessage) (any, *rpcError) {
 	if method == "textDocument/semanticTokens/full" {
 		return map[string]any{"data": d.semanticTokens()}, nil
 	}
+	if method == "textDocument/codeAction" {
+		begin, err := d.offset(p.Range.Start)
+		if err != nil {
+			return nil, &rpcError{-32602, err.Error()}
+		}
+		end, err := d.offset(p.Range.End)
+		if err != nil || end < begin {
+			return nil, &rpcError{-32602, "invalid code action range"}
+		}
+		if !s.codeActionLiterals {
+			return []codeAction{}, nil
+		}
+		return s.codeActions(d, p.Range, p.Context.Diagnostics, p.Context.Only), nil
+	}
 	offset, err := d.offset(p.Position)
 	if err != nil {
 		return nil, &rpcError{-32602, err.Error()}
 	}
 	if method == "textDocument/completion" {
 		return s.completion(d, offset), nil
+	}
+	if method == "textDocument/signatureHelp" {
+		return s.signatures(d, offset), nil
 	}
 	if method == "textDocument/references" {
 		return s.references(d, offset, p.Context.IncludeDeclaration), nil

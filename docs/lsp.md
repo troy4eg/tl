@@ -43,7 +43,10 @@ logs go to stderr.
 - Find References across files, with optional declaration locations.
 - Rename types, constructors, functions, variants and local parameters/fields.
 - Hover with declarations and documentation comments.
-- Completion of primitive types, schema types and local template/field arguments.
+- Context-aware completion of types, template categories, generic arguments, sizes and TL mask bits.
+- Declaration/field/array snippets and editable generic argument slots for clients supporting LSP snippets.
+- Signature help for generic types, aliases and constructors, including nested applications.
+- Quick fixes for type-name typos, legacy TL primitive names in TL2 and missing semicolons.
 - Document symbols with fields, union variants and template parameters.
 - Workspace symbol search.
 - Full semantic tokens, including comments and declarations.
@@ -83,6 +86,61 @@ schema dependencies are unavailable locally.
 Runtime configuration uses the same object under `settings.tl2` in
 `workspace/didChangeConfiguration`. Initialization options and configuration
 contain no editor-specific keys.
+
+## Quick fixes
+
+The server exposes `textDocument/codeAction` with kind `quickfix` to clients
+declaring `textDocument.codeAction.codeActionLiteralSupport`. VS Code and Zed
+display these edits through their standard code action menus. No custom editor
+commands or server-side file writes are needed.
+
+- Unknown type names: suggest nearby existing names, including local `Type`
+  parameters and primitives, respecting completion's scope/category rules.
+  Suggestions preserve existing generic arguments and must not introduce new
+  semantic diagnostics in the edited file. Incomplete targets are excluded.
+  Up to eight alternatives per occurrence are returned; choosing one replaces
+  only that occurrence, rather than renaming a declaration.
+- TL primitive names in TL2: suggest `int` → `int32`, `long` → `int64`,
+  `float` → `float32`, and `double` → `float64` when the old name is unknown.
+  Existing user-defined types with these names are preserved.
+- Missing semicolons: insert `;` after the last significant token, before
+  trailing comments/whitespace. Reparsing must complete that declaration and
+  preserve the surrounding declarations. Unclosed brackets and unfinished
+  field types are not repaired this way.
+
+Actions use the current unsaved buffer, match current diagnostics, honor the
+requested range and action kind, and include document versions when the client
+supports `workspace.workspaceEdit.documentChanges`. Applying, undoing and saving
+edits are controlled by the editor. Disabling unknown-type diagnostics also
+disables their fixes. Syntax fixes remain available.
+
+## Completion and signature help
+
+Completion distinguishes declaration and field names from type references. Type
+positions offer primitive/schema types and local `Type` parameters. Natural-number
+positions (TL2 array indexes and `#` generic arguments) offer `#` parameters,
+preceding required size fields and a numeric literal. Size fields must have `#`
+in TL or `uint32` (including aliases) in TL2. Optional/ignored and later fields
+are excluded. Union variants, nested repeats, and RPC request/result fields keep
+separate scopes. Unknown generic signatures use a broader list of candidates.
+Namespace prefixes replace the whole qualified identifier.
+
+Template declarations offer `Type` and `#`. TL mask completion offers available
+mask names and bits `0`–`31`, preserving the mask name and an existing `?`.
+Comments do not produce suggestions or signature help.
+
+Clients declaring `textDocument.completion.completionItem.snippetSupport` receive
+declaration templates (`struct`, `generic`, `alias`, `union`, `function` for TL2;
+`constructor`, `generic`, `function` for TL), field/variant and array/repeat templates.
+RPC templates generate a nonzero CRC. Generic type completion supplies editable
+type/natural-number argument slots, unless an argument list already follows the
+identifier. Other clients receive plain identifier edits without snippet syntax.
+
+`textDocument/signatureHelp` shows parameter names and `Type`/`#` categories for
+the current generic application. It tracks nested angle applications in both
+formats, and TL applications in parentheses or function results using whitespace.
+Closed applications dismiss their hints; shared TL result signatures are
+deduplicated. Missing dependency signatures cannot provide parameter hints.
 
 ## Scope and limitations
 

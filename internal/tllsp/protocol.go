@@ -40,6 +40,14 @@ type diagnosticRelatedInformation struct {
 	Message  string   `json:"message"`
 }
 
+type codeAction struct {
+	Title       string        `json:"title"`
+	Kind        string        `json:"kind"`
+	Diagnostics []diagnostic  `json:"diagnostics"`
+	IsPreferred bool          `json:"isPreferred,omitempty"`
+	Edit        workspaceEdit `json:"edit"`
+}
+
 type documentSymbol struct {
 	Name           string           `json:"name"`
 	Detail         string           `json:"detail,omitempty"`
@@ -55,11 +63,27 @@ type markup struct {
 }
 
 type completionItem struct {
-	Label         string    `json:"label"`
-	Kind          int       `json:"kind"`
-	Detail        string    `json:"detail,omitempty"`
-	Documentation *markup   `json:"documentation,omitempty"`
-	TextEdit      *textEdit `json:"textEdit,omitempty"`
+	Label            string    `json:"label"`
+	Kind             int       `json:"kind"`
+	Detail           string    `json:"detail,omitempty"`
+	Documentation    *markup   `json:"documentation,omitempty"`
+	TextEdit         *textEdit `json:"textEdit,omitempty"`
+	InsertTextFormat int       `json:"insertTextFormat,omitempty"`
+}
+
+type parameterInformation struct {
+	Label string `json:"label"`
+}
+type signatureInformation struct {
+	Label           string                 `json:"label"`
+	Documentation   *markup                `json:"documentation,omitempty"`
+	Parameters      []parameterInformation `json:"parameters"`
+	ActiveParameter int                    `json:"activeParameter"`
+}
+type signatureHelp struct {
+	Signatures      []signatureInformation `json:"signatures"`
+	ActiveSignature int                    `json:"activeSignature"`
+	ActiveParameter int                    `json:"activeParameter"`
 }
 
 type textEdit struct {

@@ -41,7 +41,8 @@ TL parser or indexer.
    worktree's PATH if `binary.path` is omitted. `binary.arguments` and
    `binary.env` are forwarded to the process.
 
-4. Open a `.tl` or `.tl2` file. Navigation, references, rename, hover, completion, diagnostics and workspace
+4. Open a `.tl` or `.tl2` file. Navigation, references, rename, hover, contextual completion,
+   snippets, generic signature help, quick fixes, diagnostics and workspace
    symbols come from the shared server. Syntax highlighting comes from its
    semantic tokens; no separate Tree-sitter grammar is required.
 
@@ -53,6 +54,10 @@ changing its executable or initialization options.
 Use Zed's **Find All References** and **Rename** actions on a symbol. The shared
 server handles both features, including local scope and cross-file edits.
 See [rename rules](../docs/lsp.md#references-and-rename) for restrictions.
+
+Use **editor: toggle code actions** on an error to see quick fixes for type-name
+typos, legacy primitive names in TL2 and missing semicolons. See
+[quick fix rules](../docs/lsp.md#quick-fixes) for their scope.
 
 ## Build verification
 

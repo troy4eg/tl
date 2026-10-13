@@ -28,9 +28,11 @@ func (d *document) parseTL(path string) {
 			d.exported = append(d.exported, s)
 		}
 		for _, p := range c.TemplateArguments {
+			s.params = append(s.params, typeParameter{p.FieldName, p.IsNat})
 			pb, pe := d.parserRange(p.PR)
 			nb, ne := d.tlNameRange(p.PR, p.FieldName)
 			local := &symbol{name: p.FieldName, kind: 26, scope: s, begin: pb, end: pe, nameBegin: nb, nameEnd: ne, signature: strings.TrimSpace(d.text[pb:pe])}
+			local.nat = p.IsNat
 			s.locals[p.FieldName] = local
 			s.children = append(s.children, local)
 		}
@@ -41,6 +43,7 @@ func (d *document) parseTL(path string) {
 			b, e := d.parserRange(c.TypeDecl.PR)
 			nb, ne := d.parserRange(c.TypeDecl.NamePR)
 			typeSymbol := &symbol{name: c.TypeDecl.Name.String(), kind: 23, globalKind: "type", begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: s.signature, comment: s.comment}
+			typeSymbol.params = s.params
 			s.children = append(s.children, typeSymbol)
 			d.exported = append(d.exported, typeSymbol)
 			for i, name := range c.TypeDecl.Arguments {
@@ -101,6 +104,8 @@ func (d *document) addTLFields(parent *symbol, fields []tlast.Field, locals map[
 		b, e := d.parserRange(f.PR)
 		nb, ne := d.parserRange(f.PRName)
 		child := &symbol{name: f.FieldName, kind: 8, scope: parent, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: strings.TrimSpace(d.text[b:e]), comment: cleanComment(f.CommentBefore)}
+		typ := tlast.TL1TypeRef(f.FieldType)
+		child.valueType, child.optional = &typ, f.Mask != nil || f.Excl || f.IsRepeated || strings.HasPrefix(f.FieldName, "_")
 		locals[f.FieldName] = child
 		children[i] = child
 		parent.children = append(parent.children, child)
@@ -124,7 +129,14 @@ func (d *document) addTLFields(parent *symbol, fields []tlast.Field, locals map[
 		if children[i] != nil {
 			nestedParent = children[i]
 			nestedParent.locals = nestedLocals
+		} else {
+			b, e := d.parserRange(f.PR)
+			nestedParent = &symbol{begin: b, end: e, locals: nestedLocals}
+			d.assistScopes = append(d.assistScopes, nestedParent)
 		}
 		d.addTLFields(nestedParent, f.ScaleRepeat.Rep, nestedLocals)
+		if children[i] == nil {
+			parent.children = append(parent.children, nestedParent.children...)
+		}
 	}
 }

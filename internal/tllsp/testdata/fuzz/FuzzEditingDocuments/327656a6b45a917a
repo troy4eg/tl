@@ -1,0 +1,2 @@
+go test fuzz v1
+string("aZ\xff+A:<\x01AA 8z 8\"d>!??\"")

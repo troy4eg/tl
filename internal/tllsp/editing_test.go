@@ -51,7 +51,7 @@ func TestEditingNavigationAndScopes(t *testing.T) {
 				t.Fatalf("global definition/hover: %+v", defs)
 			}
 			items := s.completion(d, strings.Index(tc.text, "value:")+6)
-			for _, name := range []string{"T", "value", "items", "Item"} {
+			for _, name := range []string{"T", "Item"} {
 				if !hasCompletion(items, name) {
 					t.Errorf("missing %s: %+v", name, items)
 				}
@@ -63,10 +63,10 @@ func TestEditingNavigationAndScopes(t *testing.T) {
 		})
 	}
 
-	d := parseDocument("file:///tmp/union.tl2", "Choice<T:Type> = | first n:uint32 items:[n]T | second m:uint32 items:", 1, true)
+	d := parseDocument("file:///tmp/union.tl2", "Choice<T:Type,N:#> = | first n:uint32 items:[n]T | second m:uint32 items:[", 1, true)
 	s := editingServer(d)
 	items := s.completion(d, len(d.text))
-	if !hasCompletion(items, "T") || !hasCompletion(items, "m") || !hasCompletion(items, "items") || hasCompletion(items, "n") {
+	if !hasCompletion(items, "N") || !hasCompletion(items, "m") || hasCompletion(items, "T") || hasCompletion(items, "n") {
 		t.Fatalf("union scope: %+v", items)
 	}
 	for _, text := range []string{"Choice<T:Type> =\nfirst x:T", "Choice<T:Type> =\nfirst x:T\n| second y:", "Choice = empty"} {
@@ -127,7 +127,7 @@ func TestIncrementalTypingPromotesDeclarations(t *testing.T) {
 	}
 	var items []completionItem
 	response(t, results, 5, &items)
-	if !hasCompletion(items, "T") || hasCompletion(items, "value") {
+	if hasCompletion(items, "T") || hasCompletion(items, "value") {
 		t.Fatalf("stale completion: %+v", items)
 	}
 	ps := publications(t, results, consumerURI)
@@ -173,8 +173,24 @@ func checkEditingRanges(t *testing.T, text string) {
 		}
 		s := editingServer(d)
 		_ = s.completion(d, len(text))
+		s.snippetSupport = true
+		for _, item := range s.completion(d, len(text)) {
+			b, err := d.offset(item.TextEdit.Range.Start)
+			if err != nil {
+				t.Fatalf("%s completion start %+v, text=%q: %v", language, item, text, err)
+			}
+			e, err := d.offset(item.TextEdit.Range.End)
+			if err != nil {
+				t.Fatalf("%s completion end %+v, text=%q: %v", language, item, text, err)
+			}
+			check(b, e)
+		}
+		_ = s.signatures(d, len(text))
 		_ = d.semanticTokens()
 		_ = s.diagnostics(d)
+		for _, action := range allActions(s, d) {
+			_ = applyAction(t, d, action)
+		}
 	}
 }
 

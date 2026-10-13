@@ -19,7 +19,7 @@ type source struct {
 func newSource(text string) source {
 	s := source{text: text, lines: []int{0}}
 	for i, b := range []byte(text) {
-		if b == '\n' {
+		if b == '\n' || b == '\r' && (i+1 == len(text) || text[i+1] != '\n') {
 			s.lines = append(s.lines, i+1)
 		}
 	}
@@ -29,6 +29,7 @@ func newSource(text string) source {
 func (s source) position(offset int) position {
 	offset = max(0, min(offset, len(s.text)))
 	line := sort.Search(len(s.lines), func(i int) bool { return s.lines[i] > offset }) - 1
+	offset = min(offset, s.lineEnd(line))
 	units := 0
 	for _, r := range s.text[s.lines[line]:offset] {
 		units++
@@ -39,18 +40,26 @@ func (s source) position(offset int) position {
 	return position{line, units}
 }
 
+func (s source) lineEnd(line int) int {
+	end := len(s.text)
+	if line+1 < len(s.lines) {
+		end = s.lines[line+1]
+		if end > 0 && s.text[end-1] == '\n' {
+			end--
+		}
+		if end > 0 && s.text[end-1] == '\r' {
+			end--
+		}
+	}
+	return end
+}
+
 func (s source) offset(p position) (int, error) {
 	if p.Line < 0 || p.Line >= len(s.lines) || p.Character < 0 {
 		return 0, fmt.Errorf("position outside document")
 	}
 	start := s.lines[p.Line]
-	end := len(s.text)
-	if p.Line+1 < len(s.lines) {
-		end = s.lines[p.Line+1] - 1
-	}
-	if end > start && s.text[end-1] == '\r' {
-		end--
-	}
+	end := s.lineEnd(p.Line)
 	units := 0
 	for i := start; i < end; {
 		if units == p.Character {

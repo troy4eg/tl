@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+- Filter completion by type/category/generic argument, array size and TL mask context.
+- Add shared LSP snippets for declarations, fields and arrays, plus editable generic argument slots.
+- Show signature help for nested generic applications in TL and TL2.
+- Add shared LSP quick fixes for type-name typos, TL primitive names in TL2 and unambiguous missing semicolons.
+- Separate RPC request/result and anonymous repeated-field scopes; keep UTF-16 edits valid across LF, CRLF and CR endings.
+
 ## 0.5.0
 
 - Keep navigation, hover, references, completion and outline available in unfinished TL and TL2 declarations.

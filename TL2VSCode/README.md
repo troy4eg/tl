@@ -9,7 +9,8 @@ server shared with the Zed client.
 - Automatic language detection and TextMate highlighting for `.tl` (TL) and `.tl2` (TL2).
 - Go to Definition and Find References across files and local template parameters.
 - Rename types, constructors, functions, variants and local parameters/fields.
-- Hover, type completion, document outline and workspace symbols.
+- Hover, context-aware completion, snippets, generic signature help, document outline and workspace symbols.
+- Quick fixes for type-name typos, legacy primitive names in TL2 and missing semicolons.
 - Syntax and configurable unknown-type diagnostics.
 - Semantic tokens from the shared server.
 
@@ -92,7 +93,7 @@ configuration.
 ```sh
 npm ci
 npx @vscode/vsce package
-code --install-extension tl2-0.5.0.vsix
+code --install-extension tl2-0.6.0.vsix
 ```
 
 The extension requires a trusted workspace and VS Code 1.82 or newer. It is not
@@ -121,6 +122,9 @@ shared TL types, bare constructors, TL2 types, local template scope, comments
 and explicit CRC tags. It also checks closed-file diagnostics and navigation,
 hover, references, completion and outline while declarations are being typed,
 including missing-semicolon recovery and removal of stale fields.
+Completion tests check `Type`/`#` filtering, signature help and expansion of a
+generic snippet through the editor.
+Quick fix tests apply type-name, primitive and TL/TL2 semicolon corrections to unsaved buffers.
 Results are saved to `editor-results.json` in the test
 workspace. Test sources are excluded from the VSIX.
 

@@ -19,6 +19,8 @@ exports.run = async function () {
         'diagnostics-use.tl2': '// 😀\r\nSemanticUse = value:CheckedBox<7>;\r\n',
         'typing.tl2': '// 😀\r\nDraft<T:Type> = value:T;\r\nAfterDraft = value:int32;\r\n',
         'typing.tl': '// 😀\r\ndraft {X:Type} value:X = DraftTL X;\r\nafter = AfterTL;\r\n',
+        'assistance.tl2': '// Generic 😀\r\nAssistantBox<T:Type, N:#> = values:[N]T;\r\nAssistantUse<U:Type, M:#> = n:uint32 value:AssistantBox<U, M>;\r\n',
+        'quick-fix.tl2': '// Quick fix 😀\r\nFixTarget = id:int32;\r\nFixUse = value:FixTarget;\r\n',
     };
     for (const [name, text] of Object.entries(fixtures)) {
         fs.writeFileSync(path.join(root, name), text);
@@ -126,10 +128,14 @@ exports.run = async function () {
         assert(completions.items.some(i => i.label === parameter), 'Template completion missing while typing');
         const refs = await vscode.commands.executeCommand('vscode.executeReferenceProvider', doc.uri, refPosition);
         assert(refs.length >= 2, 'References missing in unfinished declaration');
-        // Insert just the semicolon through the editor; the same declaration becomes complete.
-        const insert = new vscode.WorkspaceEdit();
-        insert.insert(doc.uri, doc.positionAt(text.indexOf('\r\n', text.indexOf('value:'))), ';');
-        assert(await vscode.workspace.applyEdit(insert));
+        // Apply the server's quick fix; the same declaration becomes complete.
+        const semicolonAt = doc.positionAt(text.indexOf('\r\n', text.indexOf('value:')));
+        const actions = await vscode.commands.executeCommand('vscode.executeCodeActionProvider', doc.uri,
+            new vscode.Range(semicolonAt, semicolonAt), vscode.CodeActionKind.QuickFix.value);
+        const fix = actions.find(a => a.title === "Insert missing ';'");
+        assert(fix?.edit, `Semicolon quick fix missing for ${name}`);
+        assert(fix.isPreferred);
+        assert(await vscode.workspace.applyEdit(fix.edit));
         await waitUntil(async () => vscode.languages.getDiagnostics(doc.uri).length === 0, 'Finishing declaration did not clear diagnostics');
     }
     const typing = documents['typing.tl2'];
@@ -139,8 +145,57 @@ exports.run = async function () {
         return syms?.[0]?.children.length === 1;
     }, 'Deleted fields remained in the outline');
     const freshCompletions = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', typing.uri, typing.positionAt(typing.getText().indexOf('= ') + 2));
-    assert(freshCompletions.items.some(i => i.label === 'T'));
+    assert(freshCompletions.items.some(i => i.label === 'field' && i.insertText instanceof vscode.SnippetString));
+    assert(!freshCompletions.items.some(i => i.label === 'T'));
     assert(!freshCompletions.items.some(i => i.label === 'value' || i.label === 'items'), 'Deleted fields remained in completion');
+    const assistance = documents['assistance.tl2'];
+    const typeArgument = assistance.positionAt(assistance.getText().indexOf('AssistantBox<U') + 'AssistantBox<'.length);
+    const typeItems = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', assistance.uri, typeArgument);
+    assert(typeItems.items.some(i => i.label === 'U'));
+    assert(!typeItems.items.some(i => i.label === 'M' || i.label === 'n'));
+    const natArgument = assistance.positionAt(assistance.getText().indexOf(', M>') + 2);
+    const natItems = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', assistance.uri, natArgument);
+    assert(natItems.items.some(i => i.label === 'M'));
+    assert(natItems.items.some(i => i.label === 'n'));
+    assert(!natItems.items.some(i => i.label === 'U' || i.label === 'int32'));
+    const signature = await vscode.commands.executeCommand('vscode.executeSignatureHelpProvider', assistance.uri, natArgument);
+    assert.equal(signature.activeParameter, 1);
+    assert.equal(signature.signatures[0].label, 'AssistantBox<T: Type, N: #>');
+    assert.equal(signature.signatures[0].parameters[1].label, 'N: #');
+    await replaceBuffer(assistance, '// Generic 😀\r\nAssistantBox<T:Type, N:#> = values:[N]T;\r\nAssistantUse = value:AssistantB');
+    await waitUntil(async () => vscode.languages.getDiagnostics(assistance.uri).some(d => d.code === 'syntax'), 'Incomplete generic did not update');
+    const genericItems = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', assistance.uri, assistance.positionAt(assistance.getText().length));
+    const generic = genericItems.items.find(i => i.label === 'AssistantBox');
+    assert(generic?.insertText instanceof vscode.SnippetString, 'Generic completion has no editable argument slots');
+    const editor = await vscode.window.showTextDocument(assistance);
+    assert(await editor.insertSnippet(generic.insertText, generic.range));
+    assert(assistance.getText().endsWith('AssistantBox<int32, 0>'));
+    const finish = new vscode.WorkspaceEdit();
+    finish.insert(assistance.uri, assistance.positionAt(assistance.getText().length), ';');
+    assert(await vscode.workspace.applyEdit(finish));
+    await waitUntil(async () => vscode.languages.getDiagnostics(assistance.uri).length === 0, 'Expanded generic snippet is invalid');
+    const quickFix = documents['quick-fix.tl2'];
+    await replaceBuffer(quickFix, '// Quick fix 😀\r\nFixTarget = id:int32;\r\nFixUse = value:FixTaregt count:int;\r\n');
+    await waitUntil(async () => vscode.languages.getDiagnostics(quickFix.uri).filter(d => d.code === 'unknown-type').length === 2,
+        'Quick fix diagnostics missing');
+    for (const [oldName, newName, preferred] of [['FixTaregt', 'FixTarget', false], ['int;', 'int32', true]]) {
+        const begin = quickFix.getText().indexOf(oldName);
+        const end = begin + (oldName === 'int;' ? 3 : oldName.length);
+        const actions = await vscode.commands.executeCommand('vscode.executeCodeActionProvider', quickFix.uri,
+            new vscode.Range(quickFix.positionAt(begin), quickFix.positionAt(end)), vscode.CodeActionKind.QuickFix.value);
+        const action = actions.find(a => a.title.endsWith(`with '${newName}'`));
+        assert(action?.edit, `Type quick fix missing for ${oldName}`);
+        assert.equal(!!action.isPreferred, preferred);
+        const edits = action.edit.get(quickFix.uri);
+        assert.equal(edits.length, 1);
+        assert(edits[0].range.isEqual(new vscode.Range(quickFix.positionAt(begin), quickFix.positionAt(end))));
+        assert.equal(edits[0].newText, newName);
+        assert(await vscode.workspace.applyEdit(action.edit));
+        await waitUntil(async () => !vscode.languages.getDiagnostics(quickFix.uri).some(d => d.message.includes(oldName.replace(';', ''))),
+            `Diagnostic did not clear after fixing ${oldName}`);
+    }
+    assert(quickFix.getText().includes('value:FixTarget count:int32;'));
+    await waitUntil(async () => vscode.languages.getDiagnostics(quickFix.uri).length === 0, 'Quick fixes left diagnostics');
     // Applying an edit changes editor buffers; save is a separate user action.
     for (const [name, text] of Object.entries(fixtures)) {
         assert.equal(fs.readFileSync(path.join(root, name), 'utf8'), text);
@@ -149,7 +204,9 @@ exports.run = async function () {
         referenceProvider: true, tlTypeRename: true, tlConstructorRename: true,
         tl2TypeRename: true, localRename: true, buffersOnly: true,
         closedFileDiagnostics: true, relatedDiagnosticLocations: true, unsavedDependencyDiagnostics: true,
-        typingNavigation: true, typingCompletion: true, missingSemicolonRecovery: true, staleFieldsRemoved: true };
+        typingNavigation: true, typingCompletion: true, missingSemicolonRecovery: true, staleFieldsRemoved: true,
+        contextualCompletion: true, genericSignatureHelp: true, genericSnippetInsertion: true,
+        semicolonQuickFix: true, typeTypoQuickFix: true, legacyPrimitiveQuickFix: true };
     fs.writeFileSync(path.join(root, 'editor-results.json'), JSON.stringify(result));
     console.log('TL editor test:', result);
 };

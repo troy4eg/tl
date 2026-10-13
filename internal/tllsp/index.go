@@ -14,6 +14,11 @@ import (
 var primitives = []string{"int32", "uint32", "int64", "uint64", "float32", "float64", "byte", "string", "bool", "bit", "true"}
 
 type symbol struct {
+	params                         []typeParameter
+	nat                            bool
+	valueType                      *tlast.TL2TypeRef
+	optional                       bool
+	alias                          *tlast.TL2TypeRef
 	incomplete                     bool
 	name, signature, comment       string
 	globalKind                     string
@@ -34,14 +39,15 @@ type document struct {
 	uri      string
 	language string
 	source
-	version  int
-	open     bool
-	symbols  []*symbol
-	exported []*symbol
-	refs     []reference
-	errors   []diagnostic
-	tl       tlast.TL
-	tl2      []tlast.TL2Combinator
+	version      int
+	open         bool
+	symbols      []*symbol
+	assistScopes []*symbol
+	exported     []*symbol
+	refs         []reference
+	errors       []diagnostic
+	tl           tlast.TL
+	tl2          []tlast.TL2Combinator
 }
 
 func (d *document) parserRange(pr tlast.PositionRange) (int, int) {
@@ -100,9 +106,11 @@ func parseDocumentLanguage(uri, text string, version int, open bool, language st
 		}
 		s.nameBegin, s.nameEnd = d.parserRange(namePR)
 		for _, p := range comb.TypeDecl.TemplateArguments {
+			s.params = append(s.params, typeParameter{p.Name, p.Category.IsNat()})
 			pb, pe := d.parserRange(p.PR)
 			nb, ne := d.parserRange(p.PRName)
 			local := &symbol{name: p.Name, kind: 26, scope: s, begin: pb, end: pe, nameBegin: nb, nameEnd: ne, signature: p.Name + ": " + p.Category.String()}
+			local.nat = p.Category.IsNat()
 			if s.incomplete {
 				local.signature = strings.TrimSpace(text[pb:pe])
 			}
@@ -111,8 +119,26 @@ func parseDocumentLanguage(uri, text string, version int, open bool, language st
 		}
 		if comb.IsFunction {
 			d.addFields(s, comb.FuncDecl.Arguments, s.locals)
-			d.addDefinition(s, comb.FuncDecl.ReturnType, s.locals)
+			// RPC result fields form a scope separate from request fields.
+			result := &symbol{begin: s.end, end: s.end, locals: map[string]*symbol{}}
+			resultFound := false
+			for _, tok := range assistTokens(text, s.begin, s.end) {
+				if tok.text == "=>" {
+					resultFound = true
+					result.begin = tok.end
+					break
+				}
+			}
+			d.addDefinition(result, comb.FuncDecl.ReturnType, result.locals)
+			s.children = append(s.children, result.children...)
+			if resultFound {
+				d.assistScopes = append(d.assistScopes, result)
+			}
 		} else {
+			if comb.TypeDecl.Type.IsTypeAlias {
+				alias := comb.TypeDecl.Type.TypeAlias
+				s.alias = &alias
+			}
 			d.addDefinition(s, comb.TypeDecl.Type, s.locals)
 		}
 		if s.incomplete {
@@ -144,6 +170,8 @@ func (d *document) addFields(parent *symbol, fields []tlast.TL2Field, locals map
 		b, e := d.parserRange(field.PR)
 		nb, ne := d.parserRange(field.PRName)
 		child := &symbol{name: field.Name, kind: 8, scope: parent, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: field.Name + ": " + field.Type.String(), comment: cleanComment(field.CommentBefore)}
+		typ := field.Type
+		child.valueType, child.optional = &typ, field.IsOptional || field.IsIgnored || field.IsOmitted()
 		fieldSymbols[i] = child
 		locals[field.Name] = child
 	}
