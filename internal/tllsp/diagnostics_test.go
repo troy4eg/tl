@@ -119,3 +119,57 @@ func TestTLUnknownTypePointsAtName(t *testing.T) {
 		t.Fatalf("TL name range: %+v", items)
 	}
 }
+
+func TestTLMaskedNatArgumentDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	uri := uriFromPath(filepath.Join(root, "use.tl"))
+	writeFile(t, filepath.Join(root, "types.tl"), `maybeFalse {T:Type} = Maybe T;
+maybeTrue {T:Type} value:T = Maybe T;
+wall.testType#7e410c20 {fields_mask:#}
+  test_id        : fields_mask.0? long
+  parent_test_id : fields_mask.1? long // 0 if absent
+  = wall.TestType fields_mask;`)
+	text := `// 😀
+---functions---
+@readwrite
+wall.testFunction#f0e3b1c6
+  mode             : #
+  fields_mask_post : mode.0? #
+  notification     : mode.0? %(wall.TestType fields_mask_post)
+  = Maybe long;`
+	writeFile(t, filepath.Join(root, "use.tl"), text)
+	invalid := strings.Replace(text, "mode.0? #", "mode.0? long", 1)
+	change := func(version int, text string) map[string]any {
+		return rpc("textDocument/didChange", nil, map[string]any{
+			"textDocument":   map[string]any{"uri": uri, "version": version},
+			"contentChanges": []any{map[string]any{"text": text}},
+		})
+	}
+	results := runDiagnosticSession(t, uri,
+		[]map[string]any{
+			rpc("initialize", 0, map[string]any{"rootUri": uriFromPath(root), "capabilities": map[string]any{"textDocument": map[string]any{"publishDiagnostics": map[string]any{"relatedInformation": true}}}}),
+			rpc("initialized", nil, map[string]any{}),
+		},
+		[]map[string]any{rpc("textDocument/didOpen", nil, map[string]any{"textDocument": map[string]any{"uri": uri, "languageId": "tl", "version": 1, "text": invalid}})},
+		[]map[string]any{change(2, text)},
+	)
+	items := publications(t, results, uri)
+	if len(items) != 3 || len(items[0].Diagnostics) != 0 || len(items[2].Diagnostics) != 0 {
+		t.Fatalf("valid masked argument: %+v", items)
+	}
+	p := items[1]
+	if p.Version == nil || *p.Version != 1 || len(p.Diagnostics) != 1 || p.Diagnostics[0].Code != "field-dependency" {
+		t.Fatalf("invalid masked argument: %+v", p)
+	}
+	begin := strings.LastIndex(invalid, "fields_mask_post")
+	if p.Diagnostics[0].Range != newSource(invalid).span(begin, begin+len("fields_mask_post")) {
+		t.Fatalf("reference range: %+v", p)
+	}
+	links := p.Diagnostics[0].RelatedInformation
+	if len(links) != 1 || links[0].Location.URI != uri {
+		t.Fatalf("field dependency link: %+v", p)
+	}
+	if items[2].Version == nil || *items[2].Version != 2 {
+		t.Fatalf("fixed document version: %+v", items[2])
+	}
+}

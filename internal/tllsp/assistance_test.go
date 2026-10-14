@@ -45,6 +45,8 @@ func TestCompletionContexts(t *testing.T) {
 		{"tl masked type", "tl", "d {T:Type} {N:#} flags:# value:flags.0?^ = D T N;", []string{"T", "int", "Pair"}, []string{"N", "flags", "0"}},
 		{"tl nat angle", "tl", "d {T:Type} {N:#} flags:# value:Pair<T,^> = D T N;", []string{"N", "flags", "0"}, []string{"T", "int", "Pair"}},
 		{"tl nat apply", "tl", "d {T:Type} {N:#} flags:# value:(Pair T ^) = D T N;", []string{"N", "flags", "0"}, []string{"T", "int", "Pair"}},
+		{"tl masked nat apply", "tl", "d flags:# count:flags.0?# bad:flags.0?int _ignored:# group:2*[#] value:flags.0?%(Pair int ^) later:# = D;", []string{"flags", "count", "0"}, []string{"bad", "_ignored", "group", "later", "value", "int", "Pair"}},
+		{"tl masked mask prefix", "tl", "d flags:# mask:flags.0?# value:^ = D;", []string{"flags", "mask", "int"}, []string{"value"}},
 		{"tl arithmetic nat apply", "tl", "d {N:#} value:(Pair int 3 + ^) = D N;", []string{"N", "0"}, []string{"int", "Pair"}},
 		{"tl nested scope", "tl", "d {T:Type} outer:# group:[n:# value:(Pair T ^)] = D T;", []string{"n", "outer", "0"}, []string{"T", "int"}},
 		{"namespace prefix", "tl2", "D = value:api.I^tem;", []string{"api.Item"}, []string{"int32", "Box"}},
@@ -79,7 +81,7 @@ func TestCompletionContexts(t *testing.T) {
 }
 
 func TestMaskBitCompletionKeepsMaskAndQuestionMark(t *testing.T) {
-	for _, text := range []string{"d flags:# value:flags.^ = D;", "d flags:# value:flags.3^?int = D;"} {
+	for _, text := range []string{"d flags:# value:flags.^ = D;", "d flags:# value:flags.3^?int = D;", "d mode:# flags:mode.0?# value:flags.^ = D;"} {
 		d, offset := cursorDocument("tl", text)
 		items := assistanceServer(d).completion(d, offset)
 		if len(items) == 0 {

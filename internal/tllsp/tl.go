@@ -104,7 +104,9 @@ func (d *document) addTLFields(parent *symbol, fields []tlast.Field, locals map[
 		b, e := d.parserRange(f.PR)
 		nb, ne := d.parserRange(f.PRName)
 		child := &symbol{name: f.FieldName, kind: 8, scope: parent, begin: b, end: e, nameBegin: nb, nameEnd: ne, signature: strings.TrimSpace(d.text[b:e]), comment: cleanComment(f.CommentBefore)}
-		child.legacyType, child.optional = &f.FieldType, f.Mask != nil || f.Excl || f.IsRepeated || strings.HasPrefix(f.FieldName, "_")
+		// A masked TL1 # field can be used as a nat argument or another mask;
+		// its value is zero when absent, matching the compiler.
+		child.legacyType, child.optional = &f.FieldType, f.Excl || f.IsRepeated || strings.HasPrefix(f.FieldName, "_")
 		locals[f.FieldName] = child
 		children[i] = child
 		parent.children = append(parent.children, child)

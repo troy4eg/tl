@@ -153,10 +153,11 @@ disables their fixes. Syntax fixes remain available.
 Completion distinguishes declaration and field names from type references. Type
 positions offer primitive/schema types and local `Type` parameters. Natural-number
 positions (TL2 array indexes and `#` generic arguments) offer `#` parameters,
-preceding required size fields and a numeric literal. Size fields must have `#`
-in TL or `uint32` (including aliases) in TL2. Optional/ignored and later fields
-are excluded. Union variants, nested repeats, and RPC request/result fields keep
-separate scopes. Unknown generic signatures use a broader list of candidates.
+preceding size fields and a numeric literal. Size fields must have `#` in TL
+(including masked fields) or required `uint32` (including aliases) in TL2.
+Ignored and later fields are excluded. Union variants, nested repeats, and RPC
+request/result fields keep separate scopes. Unknown generic signatures use a
+broader list of candidates.
 Namespace prefixes replace the whole qualified identifier.
 
 Template declarations offer `Type` and `#`. TL mask completion offers available
@@ -210,8 +211,10 @@ The semantic pass checks template arity and `Type`/`#` categories, matching TL1
 result parameters and shared type signatures, duplicate declarations/parameters/
 fields/variants, and references to functions as types. It checks TL1 mask and
 repeat-size dependencies, mask bits, and TL2 field-dependent sizes (including
-aliases of `uint32`). Dependencies must refer to preceding required fields of the
-appropriate type. Nested repeats and union variants retain separate scopes.
+aliases of `uint32`). Dependencies must refer to preceding fields of the
+appropriate type. Masked TL1 `#` fields can supply template arguments, masks and
+repeat sizes; an absent field has value zero, matching the compiler. TL2 size
+fields must be required. Nested repeats and union variants retain separate scopes.
 It also checks zero TL1 tags and CRC collisions across both formats, using the
 same tag checker as the hybrid compiler. The pass runs on recovered ASTs and
 unsaved buffers without generating code; missing dependencies do not suppress

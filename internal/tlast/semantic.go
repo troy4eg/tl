@@ -311,7 +311,9 @@ func (c *semanticChecker) fieldsTL1(fields []Field, locals map[string]semanticLo
 	seen := map[string]PositionRange{}
 	for i := range fields {
 		f := &fields[i]
-		c.addField(f.FieldName, &f.PRName, nil, &f.FieldType, f.Mask != nil || f.IsRepeated, locals, seen)
+		// Masked TL1 # fields remain valid nat references: the compiler uses
+		// zero when the field is absent. Repeated fields are not scalar nats.
+		c.addField(f.FieldName, &f.PRName, nil, &f.FieldType, f.IsRepeated, locals, seen)
 	}
 	for i, f := range fields {
 		if f.Mask != nil {
@@ -327,8 +329,8 @@ func (c *semanticChecker) fieldsTL1(fields []Field, locals map[string]semanticLo
 			if !f.ScaleRepeat.ExplicitScale {
 				if i > 0 {
 					prev := fields[i-1]
-					if prev.FieldType.String() != "#" || prev.Mask != nil {
-						c.report("field-dependency", f.PR, &prev.PR, "Implicit repeat size must reference a preceding required # field")
+					if prev.FieldType.String() != "#" {
+						c.report("field-dependency", f.PR, &prev.PR, "Implicit repeat size must reference a preceding # field")
 					}
 				} else {
 					nat := false
@@ -385,7 +387,11 @@ func (c *semanticChecker) localCategory(name string, local semanticLocal, pr Pos
 		return false, false
 	}
 	if local.optional || (primitive != "#" && (primitive != "uint32" || local.tl1)) {
-		c.report("field-dependency", pr, local.pr, "Reference '%s' must name a required # or uint32 field", name)
+		expected := "a required uint32 field"
+		if local.tl1 {
+			expected = "a # field"
+		}
+		c.report("field-dependency", pr, local.pr, "Reference '%s' must name %s", name, expected)
 		return false, false
 	}
 	return true, true

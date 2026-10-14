@@ -41,3 +41,40 @@ func TestSharedEditorAndCompilerChecks(t *testing.T) {
 		})
 	}
 }
+
+func TestTLMaskedNatReferencesMatchCompiler(t *testing.T) {
+	const types = `long ? = Long;
+maybeFalse {T:Type} = Maybe T;
+maybeTrue {T:Type} value:T = Maybe T;
+wall.testType#7e410c20 {fields_mask:#}
+  test_id        : fields_mask.0? long
+  parent_test_id : fields_mask.1? long // 0 if absent
+  = wall.TestType fields_mask;
+---functions---
+@readwrite
+wall.testFunction#f0e3b1c6
+`
+	for _, tt := range []struct{ name, fields string }{
+		{"same mask", "mode:# fields_mask_post:mode.0?# notification:mode.0?%(wall.TestType fields_mask_post)"},
+		{"different mask", "mode:# fields_mask_post:mode.0?# notification:mode.1?%(wall.TestType fields_mask_post)"},
+		{"unconditional argument", "mode:# fields_mask_post:mode.0?# notification:%(wall.TestType fields_mask_post)"},
+		{"mask reference", "mode:# fields_mask_post:mode.0?# notification:fields_mask_post.0?long"},
+		{"explicit repeat size", "mode:# count:mode.0?# values:count*[long]"},
+		{"implicit repeat size", "mode:# count:mode.0?# values:[long]"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tl, err := tlast.ParseTLFile(types+tt.fields+" = Maybe long;", "/test/masked.tl", tlast.LexerOptions{AllowDirty: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			k := NewKernel(&OptionsKernel{TypesWhiteList: "*", ErrorWriter: io.Discard})
+			k.filesTL1 = tl
+			if err := k.Compile(); err != nil {
+				t.Fatalf("compiler rejects fixture: %v", err)
+			}
+			if errs := tlast.ValidateSchema(tl, nil); len(errs) != 0 {
+				t.Fatalf("editor rejects valid TL: %+v", errs)
+			}
+		})
+	}
+}
